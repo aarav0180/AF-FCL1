@@ -61,7 +61,7 @@ class PreciseModel(nn.Module):
             self.xa_shape=[512]
             self.num_classes = 26
             self.classifier = S_ConvNet(28, 1, c_channel_size, xa_dim=int(np.prod(self.xa_shape)), num_classes=self.num_classes)
-            if self.algorithm=='PreciseFCL':
+            if self.algorithm in ('PreciseFCL', 'SCAFFOLD'):
                 self.flow = self.get_1d_nflow_model(feature_dim=int(np.prod(self.xa_shape)), hidden_feature=512, context_feature=self.num_classes,
                                                 num_layers=4)
         elif dataset=='CIFAR100':
@@ -69,7 +69,7 @@ class PreciseModel(nn.Module):
             self.num_classes = 100
             self.classifier = Resnet_plus(32, xa_dim=int(np.prod(self.xa_shape)), num_classes=self.num_classes)
             # self.classifier = S_ConvNet(32, 3, c_channel_size, xa_dim=int(np.prod(self.xa_shape)), num_classes=self.num_classes)
-            if self.algorithm=='PreciseFCL':
+            if self.algorithm in ('PreciseFCL', 'SCAFFOLD'):
                 self.flow = self.get_1d_nflow_model(feature_dim=int(np.prod(self.xa_shape)), hidden_feature=512, context_feature=self.num_classes,
                                                 num_layers=4)
 
@@ -77,7 +77,7 @@ class PreciseModel(nn.Module):
             self.xa_shape=[512]
             self.num_classes = 20
             self.classifier = S_ConvNet(32, 3, c_channel_size, xa_dim=int(np.prod(self.xa_shape)), num_classes=self.num_classes)
-            if self.algorithm=='PreciseFCL':
+            if self.algorithm in ('PreciseFCL', 'SCAFFOLD'):
                 self.flow = self.get_1d_nflow_model(feature_dim=int(np.prod(self.xa_shape)), hidden_feature=512, context_feature=self.num_classes,
                                                 num_layers=4)
 
@@ -92,14 +92,14 @@ class PreciseModel(nn.Module):
             betas=(beta1, beta2),
         )
 
-        if self.algorithm=='PreciseFCL':
+        if self.algorithm in ('PreciseFCL', 'SCAFFOLD'):
             self.flow_optimizer = optim.Adam(
                 self.flow.parameters(), lr=flow_lr, 
                 weight_decay=weight_decay, betas=(beta1, beta2),
             )
 
         class_params = sum(p.numel() for p in self.classifier.parameters())
-        if self.algorithm=='PreciseFCL':
+        if self.algorithm in ('PreciseFCL', 'SCAFFOLD'):
             flow_params = sum(p.numel() for p in self.flow.parameters())
         else:
             flow_params = 0
@@ -107,7 +107,7 @@ class PreciseModel(nn.Module):
 
     def to(self, device):
         self.classifier.to(device)
-        if self.algorithm=='PreciseFCL':
+        if self.algorithm in ('PreciseFCL', 'SCAFFOLD'):
             self.flow.to(device)
         self._device = device
         return self
@@ -119,14 +119,14 @@ class PreciseModel(nn.Module):
     def parameters(self):
         for param in  self.classifier.parameters():
             yield param
-        if self.algorithm=='PreciseFCL':
+        if self.algorithm in ('PreciseFCL', 'SCAFFOLD'):
             for param in  self.flow.parameters():
                 yield param
 
     def named_parameters(self):
         for name, param in self.classifier.named_parameters():
             yield 'classifier.'+name, param
-        if self.algorithm=='PreciseFCL':
+        if self.algorithm in ('PreciseFCL', 'SCAFFOLD'):
             for name, param in self.flow.named_parameters():
                 yield 'flow.'+name, param
 
@@ -206,7 +206,7 @@ class PreciseModel(nn.Module):
         
     def train_a_batch_classifier(self, x, y, flow, last_classifier, global_classifier, classes_past_task, available_labels):
         
-        if self.algorithm=='PreciseFCL' and type(flow)!=type(None) and self.k_loss_flow>0:
+        if self.algorithm in ('PreciseFCL', 'SCAFFOLD') and type(flow)!=type(None) and self.k_loss_flow>0:
             batch_size = x.shape[0]
 
             with torch.no_grad():
@@ -340,7 +340,7 @@ class PreciseModel(nn.Module):
         if torch.isnan(loss_data) or torch.isinf(loss_data):
             loss_data = torch.tensor(0.0, device=self.device, requires_grad=True)
 
-        if self.algorithm=='PreciseFCL' and type(last_flow)!=type(None):
+        if self.algorithm in ('PreciseFCL', 'SCAFFOLD') and type(last_flow)!=type(None):
             batch_size = x.shape[0]
             with torch.no_grad():
                 flow_xa, label, label_one_hot = self.sample_from_flow(last_flow, available_labels_past, batch_size)

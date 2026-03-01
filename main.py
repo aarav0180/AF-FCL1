@@ -11,11 +11,15 @@ from FLAlgorithms.servers.serverPreciseFCL import FedPrecise
 from utils.utils import setup_seed, set_log_file, print_args
 
 def create_server_n_user(args, i):
-    
-    # create base model, irreverent to FedXXX
+
+    # create base model, irrelevant to FedXXX
     model = create_model(args)
-    
-    server=FedPrecise(args, model, i)
+
+    if args.algorithm == 'SCAFFOLD':
+        from FLAlgorithms.servers.serverSCAFFOLD import ServerSCAFFOLD
+        server = ServerSCAFFOLD(args, model, i)
+    else:
+        server = FedPrecise(args, model, i)
     return server
 
 
@@ -41,7 +45,7 @@ if __name__ == "__main__":
     parser.add_argument("--datadir", type=str, default="datasets/PreciseFCL/")
     parser.add_argument("--data_split_file", type=str, default="data_split/MNISTSVHNFASHION_split_cn10_tn6_cet3_s2571.pkl")
     parser.add_argument("--malicious_client_num", type=int, default=0)
-    parser.add_argument("--algorithm", type=str, default="PreciseFCL", choices=['PreciseFCL'])
+    parser.add_argument("--algorithm", type=str, default="PreciseFCL", choices=['PreciseFCL', 'SCAFFOLD'])
     parser.add_argument("--seed", type=int, default=2571)
 
     # PreciseFCL
