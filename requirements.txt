@@ -5,3 +5,9 @@ matplotlib
 tqdm
 h5py
 seaborn
+scikit-learn
+glog
+UMNN
+torch
+torchvision
+pytest
