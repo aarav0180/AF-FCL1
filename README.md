@@ -337,6 +337,91 @@ Add `--gmm_k N` to change the number of GMM components (default: 4).
 
 ---
 
+## Stabilised Flow Training (`--klreg`)
+
+The baseline `train_a_batch_flow` has no gradient clipping on the flow
+optimizer (unlike the classifier, which clips at `max_norm=1.0`).  This was
+confirmed to cause flow-loss explosion from task 0 round 6 onward in longer
+runs.  `--klreg` fixes this with two changes and adds an optional third:
+
+| Change | Always active with `--klreg` | Flag |
+|---|---|---|
+| NaN/Inf guard on `loss_last_flow` | ✅ | — |
+| `clip_grad_norm_` on flow parameters | ✅ | `--klreg_clip` (default `1.0`) |
+| Hutchinson-estimator Jacobian KL regularisation | optional | `--klreg_beta` (default `0.0`) |
+
+The Jacobian KL term approximates $\|J\|_F^2 - \log|\det J|$ with a single
+random probe $v \sim \mathcal{N}(0,I)$:
+
+$$\mathcal{L}_\text{JacKL} = \mathbb{E}_v\left[\|J^\top v\|^2\right] - \log|\det J|$$
+
+This regularises the coupling-transform Jacobian toward orthogonal-like
+behaviour, preventing individual entries from blowing up while keeping the
+determinant in range.
+
+> Composable with all other flags.  `--klreg --klreg_beta 0` = clip only
+> (safest starting point).  `--klreg --klreg_beta 0.01` = clip + Jacobian KL.
+
+### Example
+
+```bash
+# Fix explosion, everything else unchanged:
+python main.py --klreg
+
+# GMM + stabilised flow:
+python main.py --gmm --klreg --klreg_beta 0.01
+```
+
+---
+
+## Adaptive KD Weighting (`--adaptive`)
+
+The KD loss weight is normally a fixed hyperparameter.  `--adaptive` scales
+the combined KD loss each mini-batch by:
+
+$$\alpha = \sigma(\text{batch\_acc} - 0.5)$$
+
+where $\sigma$ is the sigmoid function and `batch_acc` is the fraction of
+correctly-classified samples in the current mini-batch (computed from the
+already-available `softmax_output`, no extra forward pass).
+
+| batch\_acc | α | Effect |
+|---|---|---|
+| 0.0 | ≈ 0.38 | Low accuracy → relax KD, let model learn |
+| 0.5 | 0.50 | Balanced |
+| 1.0 | ≈ 0.62 | High accuracy → tighten KD regularisation |
+
+When `last_classifier is None` (task 0) α is forced to 1.0 — behaviour is
+identical to the baseline since all KD terms are 0 anyway.
+
+> Composable with `--gmm` and `--klreg`.
+
+### Example
+
+```bash
+# Full stack — GMM prior + stabilised flow + adaptive KD:
+python main.py --gmm --klreg --adaptive --klreg_beta 0.01
+```
+
+---
+
+## Flag Combinations
+
+All three add-ons are independently composable:
+
+| Flags | Model class used |
+|---|---|
+| *(none)* | `PreciseModel` |
+| `--gmm` | `GMMPreciseModel` |
+| `--klreg` | `KLRegPreciseModel` |
+| `--adaptive` | `AdaptivePreciseModel` |
+| `--gmm --klreg` | `KLRegGMMPreciseModel` |
+| `--gmm --adaptive` | `AdaptiveGMMPreciseModel` |
+| `--klreg --adaptive` | `AdaptiveKLRegPreciseModel` |
+| `--gmm --klreg --adaptive` | `AdaptiveKLRegGMMPreciseModel` |
+
+---
+
 ## Reference
 
 The code structure is based on the code in [FedCIL](https://github.com/daiqing98/FedCIL).

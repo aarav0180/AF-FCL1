@@ -10,16 +10,50 @@ import json
 from FLAlgorithms.servers.serverPreciseFCL import FedPrecise
 from utils.utils import setup_seed, set_log_file, print_args
 
-def create_server_n_user(args, i):
+def _pick_model(args):
+    """
+    Select the correct model class from the combination of --gmm / --klreg /
+    --adaptive flags.  Imports are local to keep startup fast when a module
+    is not needed.
+    """
+    gmm      = getattr(args, 'gmm',      False)
+    klreg    = getattr(args, 'klreg',    False)
+    adaptive = getattr(args, 'adaptive', False)
 
-    if args.gmm:
+    if adaptive and klreg and gmm:
+        from FLAlgorithms.AdaptiveModule.adaptive_models import AdaptiveKLRegGMMPreciseModel
+        return AdaptiveKLRegGMMPreciseModel(args)
+    elif adaptive and klreg:
+        from FLAlgorithms.AdaptiveModule.adaptive_models import AdaptiveKLRegPreciseModel
+        return AdaptiveKLRegPreciseModel(args)
+    elif adaptive and gmm:
+        from FLAlgorithms.AdaptiveModule.adaptive_models import AdaptiveGMMPreciseModel
+        return AdaptiveGMMPreciseModel(args)
+    elif adaptive:
+        from FLAlgorithms.AdaptiveModule.adaptive_models import AdaptivePreciseModel
+        return AdaptivePreciseModel(args)
+    elif klreg and gmm:
+        from FLAlgorithms.KLRegModule.klreg_models import KLRegGMMPreciseModel
+        return KLRegGMMPreciseModel(args)
+    elif klreg:
+        from FLAlgorithms.KLRegModule.klreg_models import KLRegPreciseModel
+        return KLRegPreciseModel(args)
+    elif gmm:
         from FLAlgorithms.GMMModule.gmm_model import GMMPreciseModel
+        return GMMPreciseModel(args)
+    else:
+        return create_model(args)
+
+
+def create_server_n_user(args, i):
+    model = _pick_model(args)
+
+    # Server: GMMServerPreciseFCL whenever a GMM model is active (it hooks
+    # fit_gmm_prior into the task-transition logic via GMMUserPreciseFCL).
+    if getattr(args, 'gmm', False):
         from FLAlgorithms.GMMModule.gmm_server import GMMServerPreciseFCL
-        model = GMMPreciseModel(args)
         server = GMMServerPreciseFCL(args, model, i)
     else:
-        # create base model, irrelevant to FedXXX
-        model = create_model(args)
         server = FedPrecise(args, model, i)
     return server
 
@@ -68,6 +102,18 @@ if __name__ == "__main__":
                         help='Replace StandardNormal NF base with a task-adaptive GMM prior')
     parser.add_argument('--gmm_k', type=int, default=4,
                         help='Number of GMM components (default: 4)')
+
+    # KLReg: gradient clipping + optional Jacobian KL regularisation for flow
+    parser.add_argument('--klreg', action='store_true',
+                        help='Stabilise flow training: gradient clip + Jacobian KL reg')
+    parser.add_argument('--klreg_clip', type=float, default=1.0,
+                        help='max_norm for clip_grad_norm_ on flow parameters (default: 1.0)')
+    parser.add_argument('--klreg_beta', type=float, default=0.0,
+                        help='Weight of Jacobian KL regularisation term (0 = clip only, default: 0.0)')
+
+    # Adaptive KD: accuracy-based dynamic KD weight
+    parser.add_argument('--adaptive', action='store_true',
+                        help='Scale KD loss by sigmoid(batch_acc - 0.5) each mini-batch')
 
     # optimizer
     parser.add_argument('--lr', type=float, default=1e-04)  
