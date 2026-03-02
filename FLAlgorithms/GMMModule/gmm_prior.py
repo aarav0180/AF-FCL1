@@ -144,18 +144,42 @@ class TaskGMMPrior(Distribution):
 
     def _sample(self, num_samples: int, context=None) -> torch.Tensor:
         """
-        Sample from the GMM:
-            1. Pick component k ~ Categorical(π)
-            2. Draw z ~ N(μ_k, diag(σ²_k))
+        Sample from the GMM, matching StandardNormal's shape contract exactly:
+          - context is None  → return [num_samples, D]
+          - context is given → return [context_size, num_samples, D]
+
+        Flow._sample then calls merge_leading_dims(noise, 2) to get
+        [context_size * num_samples, D] before passing to the inverse transform.
+        This mirrors StandardNormal._sample behaviour precisely.
         """
+        from nflows.utils import torchutils
+
         device = self._means.device
 
         if not self._fitted:
-            return torch.randn(num_samples, self.feature_dim, device=device)
+            # Task-0 fallback: standard normal N(0, I)
+            if context is None:
+                return torch.randn(num_samples, self.feature_dim, device=device)
+            else:
+                context_size = context.shape[0]
+                samples = torch.randn(context_size * num_samples, self.feature_dim, device=device)
+                return torchutils.split_leading_dim(samples, [context_size, num_samples])
 
         weights = self._log_weights.exp()
-        weights = weights / weights.sum()                                       # normalise
-        k_idx   = torch.multinomial(weights, num_samples, replacement=True)    # [N]
-        mu  = self._means[k_idx]                         # [N, D]
-        std = (self._log_vars[k_idx] * 0.5).exp()        # [N, D]
-        return mu + std * torch.randn_like(mu)
+        weights = weights / weights.sum()   # normalise (guards against fp drift)
+
+        if context is None:
+            total = num_samples
+        else:
+            context_size = context.shape[0]
+            total = context_size * num_samples
+
+        k_idx  = torch.multinomial(weights, total, replacement=True)   # [total]
+        mu     = self._means[k_idx]                                     # [total, D]
+        std    = (self._log_vars[k_idx] * 0.5).exp()                   # [total, D]
+        samples = mu + std * torch.randn_like(mu)                       # [total, D]
+
+        if context is None:
+            return samples                                              # [num_samples, D]
+        else:
+            return torchutils.split_leading_dim(samples, [context_size, num_samples])  # [ctx, N, D]
