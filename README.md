@@ -277,176 +277,63 @@ python test_cpu.py
 
 ---
 
----
+## GMM Prior for Normalizing Flow (`--gmm`)
 
-## SCAFFOLD Algorithm
+Adding `--gmm` replaces the standard Normal base distribution inside the
+normalizing flow with a **task-adaptive Gaussian Mixture Model (GMM) prior**.
 
-AF-FCL supports running the same continual-learning task loop with **SCAFFOLD**
-([Karimireddy et al., ICML 2020](https://arxiv.org/abs/1910.06378)) as the
-federated aggregation rule instead of FedAvg.
+**How it works:**
 
-SCAFFOLD eliminates client drift by having each client correct its local
-gradient with a control variate `(server_c - c_i)` every step.  No
-normalising-flow or knowledge-distillation losses are used — only cross-entropy.
+| Event | What happens |
+|---|---|
+| End of task T | Each client runs its full training set through the flow transform to collect latent codes `z = f(xa)`, then fits a K-component diagonal-covariance GMM on those codes via scikit-learn |
+| The fitted GMM is frozen and **deepcopied** into `last_copy` alongside the flow weights | |
+| Task T+1 flow training | Loss becomes `−log p_GMM(z) − log|det J_f|` instead of `−log N(0,I)(z) − log|det J_f|` |
 
-Add `--algorithm SCAFFOLD` to any dataset command.  The PreciseFCL-specific
-flags (`--k_loss_flow`, `--flow_lr`, etc.) are ignored automatically.
+The result: new-task features are pushed into the same **multi-modal cluster
+geometry** as the previous task, preventing semantic drift.  The GMM buffers
+(means, variances, weights) are **not federated** — each client keeps its own
+local distribution.
 
-### EMNIST-Letters-shuffle
+> **Note:** `--gmm` is an add-on to `--algorithm PreciseFCL`. All other
+> PreciseFCL flags (`--k_loss_flow`, `--flow_lr`, etc.) apply unchanged.
+
+### Example — EMNIST-Letters-shuffle
 
 #### Linux / macOS
 ```bash
 python main.py \
-  --algorithm SCAFFOLD \
   --dataset EMNIST-Letters-shuffle \
   --data_split_file data_split/EMNIST_letters_shuffle_split_cn8_tn6_cet2_cs2_s2571.pkl \
-  --num_glob_iters 60 --local_epochs 100 --lr 1e-4
+  --num_glob_iters 60 --local_epochs 100 \
+  --lr 1e-4 --flow_lr 1e-3 \
+  --k_loss_flow 0.05 --k_flow_lastflow 0.02 --flow_explore_theta 0.5 \
+  --gmm --gmm_k 4
 ```
 
 #### Windows CMD
 ```cmd
 python main.py ^
-  --algorithm SCAFFOLD ^
   --dataset EMNIST-Letters-shuffle ^
   --data_split_file data_split/EMNIST_letters_shuffle_split_cn8_tn6_cet2_cs2_s2571.pkl ^
-  --num_glob_iters 60 --local_epochs 100 --lr 1e-4
+  --num_glob_iters 60 --local_epochs 100 ^
+  --lr 1e-4 --flow_lr 1e-3 ^
+  --k_loss_flow 0.05 --k_flow_lastflow 0.02 --flow_explore_theta 0.5 ^
+  --gmm --gmm_k 4
 ```
 
 #### Windows PowerShell
 ```powershell
 python main.py `
-  --algorithm SCAFFOLD `
   --dataset EMNIST-Letters-shuffle `
   --data_split_file data_split/EMNIST_letters_shuffle_split_cn8_tn6_cet2_cs2_s2571.pkl `
-  --num_glob_iters 60 --local_epochs 100 --lr 1e-4
+  --num_glob_iters 60 --local_epochs 100 `
+  --lr 1e-4 --flow_lr 1e-3 `
+  --k_loss_flow 0.05 --k_flow_lastflow 0.02 --flow_explore_theta 0.5 `
+  --gmm --gmm_k 4
 ```
 
----
-
-### EMNIST-Letters
-
-#### Linux / macOS
-```bash
-python main.py \
-  --algorithm SCAFFOLD \
-  --dataset EMNIST-Letters \
-  --data_split_file data_split/EMNIST_letters_split_cn8_tn6_cet2_cs2_s2571.pkl \
-  --num_glob_iters 60 --local_epochs 100 --lr 1e-4
-```
-
-#### Windows CMD
-```cmd
-python main.py ^
-  --algorithm SCAFFOLD ^
-  --dataset EMNIST-Letters ^
-  --data_split_file data_split/EMNIST_letters_split_cn8_tn6_cet2_cs2_s2571.pkl ^
-  --num_glob_iters 60 --local_epochs 100 --lr 1e-4
-```
-
-#### Windows PowerShell
-```powershell
-python main.py `
-  --algorithm SCAFFOLD `
-  --dataset EMNIST-Letters `
-  --data_split_file data_split/EMNIST_letters_split_cn8_tn6_cet2_cs2_s2571.pkl `
-  --num_glob_iters 60 --local_epochs 100 --lr 1e-4
-```
-
----
-
-### EMNIST-Letters-malicious (M noisy clients)
-
-#### Linux / macOS
-```bash
-python main.py \
-  --algorithm SCAFFOLD \
-  --dataset EMNIST-Letters-malicious \
-  --data_split_file data_split/EMNIST_letters_split_cn8_tn6_cet2_cs2_s2571.pkl \
-  --num_glob_iters 60 --local_epochs 100 --lr 1e-4 \
-  --malicious_client_num $M
-```
-
-#### Windows CMD
-```cmd
-python main.py ^
-  --algorithm SCAFFOLD ^
-  --dataset EMNIST-Letters-malicious ^
-  --data_split_file data_split/EMNIST_letters_split_cn8_tn6_cet2_cs2_s2571.pkl ^
-  --num_glob_iters 60 --local_epochs 100 --lr 1e-4 ^
-  --malicious_client_num %M%
-```
-
-#### Windows PowerShell
-```powershell
-python main.py `
-  --algorithm SCAFFOLD `
-  --dataset EMNIST-Letters-malicious `
-  --data_split_file data_split/EMNIST_letters_split_cn8_tn6_cet2_cs2_s2571.pkl `
-  --num_glob_iters 60 --local_epochs 100 --lr 1e-4 `
-  --malicious_client_num $M
-```
-
----
-
-### MNIST-SVHN-FASHION
-
-#### Linux / macOS
-```bash
-python main.py \
-  --algorithm SCAFFOLD \
-  --dataset MNIST-SVHN-FASHION \
-  --data_split_file data_split/MNISTSVHNFASHION_split_cn10_tn6_cet3_s2571.pkl \
-  --num_glob_iters 60 --local_epochs 100 --lr 1e-4
-```
-
-#### Windows CMD
-```cmd
-python main.py ^
-  --algorithm SCAFFOLD ^
-  --dataset MNIST-SVHN-FASHION ^
-  --data_split_file data_split/MNISTSVHNFASHION_split_cn10_tn6_cet3_s2571.pkl ^
-  --num_glob_iters 60 --local_epochs 100 --lr 1e-4
-```
-
-#### Windows PowerShell
-```powershell
-python main.py `
-  --algorithm SCAFFOLD `
-  --dataset MNIST-SVHN-FASHION `
-  --data_split_file data_split/MNISTSVHNFASHION_split_cn10_tn6_cet3_s2571.pkl `
-  --num_glob_iters 60 --local_epochs 100 --lr 1e-4
-```
-
----
-
-### CIFAR100
-
-#### Linux / macOS
-```bash
-python main.py \
-  --algorithm SCAFFOLD \
-  --dataset CIFAR100 \
-  --data_split_file data_split/CIFAR100_split_cn10_tn4_cet20_s2571.pkl \
-  --num_glob_iters 40 --local_epochs 400 --lr 1e-3
-```
-
-#### Windows CMD
-```cmd
-python main.py ^
-  --algorithm SCAFFOLD ^
-  --dataset CIFAR100 ^
-  --data_split_file data_split/CIFAR100_split_cn10_tn4_cet20_s2571.pkl ^
-  --num_glob_iters 40 --local_epochs 400 --lr 1e-3
-```
-
-#### Windows PowerShell
-```powershell
-python main.py `
-  --algorithm SCAFFOLD `
-  --dataset CIFAR100 `
-  --data_split_file data_split/CIFAR100_split_cn10_tn4_cet20_s2571.pkl `
-  --num_glob_iters 40 --local_epochs 400 --lr 1e-3
-```
+Add `--gmm_k N` to change the number of GMM components (default: 4).
 
 ---
 
@@ -455,6 +342,3 @@ python main.py `
 The code structure is based on the code in [FedCIL](https://github.com/daiqing98/FedCIL).
 
 The normalizing flow code refers to [nflows](https://github.com/bayesiains/nflows).
-
-The SCAFFOLD implementation is adapted from
-[KarhouTam/SCAFFOLD-PyTorch](https://github.com/KarhouTam/SCAFFOLD-PyTorch).
