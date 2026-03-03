@@ -26,8 +26,54 @@ No generator script is bundled for this variant; supply the file manually.
 
 ### EMNIST-Letters-shuffle
 
-The dataset is downloaded automatically and the split file is **auto-generated**
-the first time the experiment is run. No manual preparation needed.
+Two split files are available for this setting.
+
+#### Variant 1 — Heterogeneous classes (`cs2`, default)
+
+Each client is assigned a **different random set of 12 classes** across 6 tasks.
+This is the fully-heterogeneous variant used in most experiments.
+
+The split file is **auto-generated** the first time the experiment is run.
+No manual preparation needed:
+
+```
+datasets/PreciseFCL/data_split/EMNIST_letters_shuffle_split_cn8_tn6_cet2_cs2_s2571.pkl
+```
+
+#### Variant 2 — Shared task pool (`shared`)
+
+All 8 clients share the **same 12 classes and the same 6 task pairs**, but
+each client receives those tasks in a **different random arrival order**.
+This matches the "shuffle" setting described in the paper (~75.8% accuracy
+for AF-FCL), where task content is consistent but temporal ordering is
+heterogeneous across clients.
+
+**Dataset composition:**
+
+| Property | Value |
+|---|---|
+| Source | EMNIST-Letters (145,600 samples, 26 letters, upper+lower mapped to same label) |
+| Clients (N) | 8 |
+| Tasks per client (T) | 6 |
+| Classes per task (C) | 2 |
+| Total classes used | 12 (same for all clients) |
+| Training samples per class per client | 500 |
+| Task order | Same 6 tasks, independently shuffled per client |
+
+Generate the split file once with:
+
+```bash
+python generate_emnist_shuffle_split_shared.py
+```
+
+This produces:
+
+```
+datasets/PreciseFCL/data_split/EMNIST_letters_shuffle_split_cn8_tn6_cet2_shared_s2571.pkl
+```
+
+The two `.pkl` files are independent — generating the shared variant does not
+affect the existing `cs2` file. Raw EMNIST image files are shared between both.
 
 ### CIFAR100
 
@@ -119,6 +165,45 @@ python main.py ^
 python main.py `
   --dataset EMNIST-Letters-shuffle `
   --data_split_file data_split/EMNIST_letters_shuffle_split_cn8_tn6_cet2_cs2_s2571.pkl `
+  --num_glob_iters 60 --local_epochs 100 `
+  --lr 1e-4 --flow_lr 1e-3 `
+  --k_loss_flow 0.05 --k_flow_lastflow 0.02 --flow_explore_theta 0.5
+```
+
+---
+
+### EMNIST-Letters-shuffle (shared task pool)
+
+> First generate the split file:  `python generate_emnist_shuffle_split_shared.py`
+>
+> All clients share the same 12 classes and 6 task pairs; only the arrival
+> order is shuffled per client.  Expected accuracy with AF-FCL: ~75.8 %.
+
+#### Linux / macOS
+```bash
+python main.py \
+  --dataset EMNIST-Letters-shuffle \
+  --data_split_file data_split/EMNIST_letters_shuffle_split_cn8_tn6_cet2_shared_s2571.pkl \
+  --num_glob_iters 60 --local_epochs 100 \
+  --lr 1e-4 --flow_lr 1e-3 \
+  --k_loss_flow 0.05 --k_flow_lastflow 0.02 --flow_explore_theta 0.5
+```
+
+#### Windows CMD
+```cmd
+python main.py ^
+  --dataset EMNIST-Letters-shuffle ^
+  --data_split_file data_split/EMNIST_letters_shuffle_split_cn8_tn6_cet2_shared_s2571.pkl ^
+  --num_glob_iters 60 --local_epochs 100 ^
+  --lr 1e-4 --flow_lr 1e-3 ^
+  --k_loss_flow 0.05 --k_flow_lastflow 0.02 --flow_explore_theta 0.5
+```
+
+#### Windows PowerShell
+```powershell
+python main.py `
+  --dataset EMNIST-Letters-shuffle `
+  --data_split_file data_split/EMNIST_letters_shuffle_split_cn8_tn6_cet2_shared_s2571.pkl `
   --num_glob_iters 60 --local_epochs 100 `
   --lr 1e-4 --flow_lr 1e-3 `
   --k_loss_flow 0.05 --k_flow_lastflow 0.02 --flow_explore_theta 0.5
