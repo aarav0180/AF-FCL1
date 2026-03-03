@@ -12,14 +12,43 @@ from utils.utils import setup_seed, set_log_file, print_args
 
 def _pick_model(args):
     """
-    Select the correct model class from the combination of --gmm / --klreg /
-    --adaptive flags.  Imports are local to keep startup fast when a module
-    is not needed.
+    Select the correct model class from the combination of
+    --cosine / --gmm / --klreg / --adaptive flags.
+
+    cosine=True swaps the fc_classifier head to CosineLinear.
+    All other flags compose on top exactly as before.
     """
+    cosine   = getattr(args, 'cosine',   False)
     gmm      = getattr(args, 'gmm',      False)
     klreg    = getattr(args, 'klreg',    False)
     adaptive = getattr(args, 'adaptive', False)
 
+    if cosine:
+        from FLAlgorithms.CosineModule.cosine_model import (
+            CosinePreciseModel,
+            CosineGMMPreciseModel,
+            CosineKLRegPreciseModel,
+            CosineAdaptivePreciseModel,
+            CosineKLRegGMMPreciseModel,
+            CosineAdaptiveGMMPreciseModel,
+            CosineAdaptiveKLRegPreciseModel,
+            CosineAdaptiveKLRegGMMPreciseModel,
+        )
+        # lookup table: (adaptive, klreg, gmm) → class
+        _cosine_map = {
+            (False, False, False): CosinePreciseModel,
+            (False, False, True ): CosineGMMPreciseModel,
+            (False, True,  False): CosineKLRegPreciseModel,
+            (True,  False, False): CosineAdaptivePreciseModel,
+            (False, True,  True ): CosineKLRegGMMPreciseModel,
+            (True,  False, True ): CosineAdaptiveGMMPreciseModel,
+            (True,  True,  False): CosineAdaptiveKLRegPreciseModel,
+            (True,  True,  True ): CosineAdaptiveKLRegGMMPreciseModel,
+        }
+        cls = _cosine_map[(adaptive, klreg, gmm)]
+        return cls(args)
+
+    # ── non-cosine path (unchanged) ─────────────────────────────────────────
     if adaptive and klreg and gmm:
         from FLAlgorithms.AdaptiveModule.adaptive_models import AdaptiveKLRegGMMPreciseModel
         return AdaptiveKLRegGMMPreciseModel(args)
@@ -114,6 +143,12 @@ if __name__ == "__main__":
     # Adaptive KD: accuracy-based dynamic KD weight
     parser.add_argument('--adaptive', action='store_true',
                         help='Scale KD loss by sigmoid(batch_acc - 0.5) each mini-batch')
+
+    # cosine head
+    parser.add_argument('--cosine', action='store_true',
+                        help='Replace nn.Linear classifier head with CosineLinear (L2-normalised weights + learnable temperature σ)')
+    parser.add_argument('--cosine_sigma', type=float, default=10.0,
+                        help='Initial temperature σ for CosineLinear head (default: 10.0)')
 
     # optimizer
     parser.add_argument('--lr', type=float, default=1e-04)  

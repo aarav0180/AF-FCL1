@@ -522,9 +522,55 @@ python main.py --gmm --klreg --adaptive --klreg_beta 0.01
 
 ---
 
+## Cosine Classifier Head (`--cosine`)
+
+`--cosine` swaps the final linear classification layer for a **CosineLinear** head:
+
+$$\hat{y} = \sigma \cdot \frac{W}{\|W\|} \cdot \frac{x_a}{\|x_a\|}$$
+
+where $\sigma$ is a **learnable** per-head temperature scalar (initialised via
+`--cosine_sigma`, default `10.0`) that is federated alongside the weights.
+
+| Argument | Default | Description |
+|---|---|---|
+| `--cosine` | off | Replace `nn.Linear` head with L2-normalised `CosineLinear` |
+| `--cosine_sigma` | `10.0` | Initial temperature σ |
+
+**Why use it?**  Cosine classifiers decouple feature magnitude from the
+classification decision, which can improve cross-task weight transfer and reduce
+feature drift when replaying flow-generated samples whose magnitude distribution
+may differ from real data.
+
+**Implementation notes:**
+- Only `__init__` is overridden — `forward`, `forward_to_xa`, and
+  `forward_from_xa` are fully inherited from `S_ConvNet` / `Resnet_plus`.
+- The mixin pattern (`CosineMixin`) calls `super().__init__(args)` first (builds
+  the full model), then replaces `self.classifier.fc_classifier` in-place and
+  rebuilds both optimisers (`classifier_optimizer`, `classifier_fb_optimizer`)
+  to point at the new module.
+- `sigma` lives in `named_parameters()` and is therefore aggregated by
+  FedAvg with zero special casing.
+- Because the existing loss uses `NLLLoss(log(softmax_output), y)` and the
+  cosine head still returns a `(softmax_p, xa, logits)` triple, the swap is
+  **fully transparent** to the training loop.
+
+### Example
+
+```bash
+# Recommended starting point — cosine head + GMM prior + adaptive KD:
+python main.py --cosine --gmm --gmm_k 4 --adaptive
+
+# Full stack:
+python main.py --cosine --gmm --gmm_k 4 --klreg --klreg_clip 1.0 --adaptive
+```
+
+---
+
 ## Flag Combinations
 
-All three add-ons are independently composable:
+All four add-ons are independently composable (2⁴ = 16 classes, all wired):
+
+### Without `--cosine`
 
 | Flags | Model class used |
 |---|---|
@@ -536,6 +582,21 @@ All three add-ons are independently composable:
 | `--gmm --adaptive` | `AdaptiveGMMPreciseModel` |
 | `--klreg --adaptive` | `AdaptiveKLRegPreciseModel` |
 | `--gmm --klreg --adaptive` | `AdaptiveKLRegGMMPreciseModel` |
+
+### With `--cosine` (CosineLinear head)
+
+Prepend `--cosine [--cosine_sigma 10.0]` to any row above:
+
+| Flags | Model class used |
+|---|---|
+| `--cosine` | `CosinePreciseModel` |
+| `--cosine --gmm` | `CosineGMMPreciseModel` |
+| `--cosine --klreg` | `CosineKLRegPreciseModel` |
+| `--cosine --adaptive` | `CosineAdaptivePreciseModel` |
+| `--cosine --gmm --klreg` | `CosineKLRegGMMPreciseModel` |
+| `--cosine --gmm --adaptive` | `CosineAdaptiveGMMPreciseModel` |
+| `--cosine --klreg --adaptive` | `CosineAdaptiveKLRegPreciseModel` |
+| `--cosine --gmm --klreg --adaptive` | `CosineAdaptiveKLRegGMMPreciseModel` |
 
 ---
 
