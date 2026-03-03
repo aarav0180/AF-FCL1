@@ -138,7 +138,27 @@ python main.py `
 
 ---
 
-### EMNIST-Letters-shuffle
+### EMNIST-Letters-shuffle — Split A: Heterogeneous classes (`cs2`)
+
+**Split type:** Each client is assigned its own **different random set of 12 classes** across 6 tasks.
+Class overlap between clients is possible; temporal arrival order is also independent per client.
+This is the more challenging and fully heterogeneous variant.
+
+**Split file** (auto-generated on first run, or via `python generate_emnist_shuffle_split.py`):
+```
+datasets/PreciseFCL/data_split/EMNIST_letters_shuffle_split_cn8_tn6_cet2_cs2_s2571.pkl
+```
+
+**Best known configuration** (from experimental runs):
+
+| Flag combination | Effect |
+|---|---|
+| `--gmm --gmm_k 4 --adaptive` | **Best accuracy** — GMM prior anchors latent geometry per task; adaptive KD scales regularisation by batch accuracy |
+| `--klreg` | Prevents flow-loss explosion via gradient clipping; stabilises training but trades off a small amount of accuracy |
+| `--klreg --klreg_beta 0.01` | Adds Jacobian KL term on top of clipping; further stabilises flow but does not improve accuracy vs clip-only |
+
+> **Summary:** `--gmm --gmm_k 4 --adaptive` is the recommended combination for this split.
+> `--klreg` is useful when flow loss explodes but expect a slight accuracy cost.
 
 #### Linux / macOS
 ```bash
@@ -147,7 +167,8 @@ python main.py \
   --data_split_file data_split/EMNIST_letters_shuffle_split_cn8_tn6_cet2_cs2_s2571.pkl \
   --num_glob_iters 60 --local_epochs 100 \
   --lr 1e-4 --flow_lr 1e-3 \
-  --k_loss_flow 0.05 --k_flow_lastflow 0.02 --flow_explore_theta 0.5
+  --k_loss_flow 0.05 --k_flow_lastflow 0.02 --flow_explore_theta 0.5 \
+  --gmm --gmm_k 4 --adaptive
 ```
 
 #### Windows CMD
@@ -157,7 +178,8 @@ python main.py ^
   --data_split_file data_split/EMNIST_letters_shuffle_split_cn8_tn6_cet2_cs2_s2571.pkl ^
   --num_glob_iters 60 --local_epochs 100 ^
   --lr 1e-4 --flow_lr 1e-3 ^
-  --k_loss_flow 0.05 --k_flow_lastflow 0.02 --flow_explore_theta 0.5
+  --k_loss_flow 0.05 --k_flow_lastflow 0.02 --flow_explore_theta 0.5 ^
+  --gmm --gmm_k 4 --adaptive
 ```
 
 #### Windows PowerShell
@@ -167,17 +189,27 @@ python main.py `
   --data_split_file data_split/EMNIST_letters_shuffle_split_cn8_tn6_cet2_cs2_s2571.pkl `
   --num_glob_iters 60 --local_epochs 100 `
   --lr 1e-4 --flow_lr 1e-3 `
-  --k_loss_flow 0.05 --k_flow_lastflow 0.02 --flow_explore_theta 0.5
+  --k_loss_flow 0.05 --k_flow_lastflow 0.02 --flow_explore_theta 0.5 `
+  --gmm --gmm_k 4 --adaptive
 ```
 
 ---
 
-### EMNIST-Letters-shuffle (shared task pool)
+### EMNIST-Letters-shuffle — Split B: Shared task pool (`shared`)
 
-> First generate the split file:  `python generate_emnist_shuffle_split_shared.py`
->
-> All clients share the same 12 classes and 6 task pairs; only the arrival
-> order is shuffled per client.  Expected accuracy with AF-FCL: ~75.8 %.
+**Split type:** All 8 clients share the **same 12 classes and the same 6 task pairs**, but each
+client receives those tasks in a **different random arrival order**.
+This matches the "shuffle" setting in the paper (~75.8 % for AF-FCL baseline).
+
+**Split file** (generate once with `python generate_emnist_shuffle_split_shared.py`):
+```
+datasets/PreciseFCL/data_split/EMNIST_letters_shuffle_split_cn8_tn6_cet2_shared_s2571.pkl
+```
+
+**Best known configuration:** baseline PreciseFCL (no add-on flags).
+
+> The add-ons (`--gmm`, `--klreg`, `--adaptive`) have not shown improvement over the
+> baseline on this split in current experiments.  Use the plain baseline command below.
 
 #### Linux / macOS
 ```bash
