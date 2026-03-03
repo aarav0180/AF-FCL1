@@ -430,13 +430,4 @@ The normalizing flow code refers to [nflows](https://github.com/bayesiains/nflow
 
 trying command :
 
-python main.py \
-  --dataset EMNIST-Letters-shuffle \
-  --data_split_file data_split/EMNIST_letters_shuffle_split_cn8_tn6_cet2_cs2_s2571.pkl \
-  --num_glob_iters 60 --local_epochs 100 \
-  --lr 1e-4 --flow_lr 1e-3 \
-  --k_loss_flow 0.05 --k_flow_lastflow 0.02 --flow_explore_theta 0.5 \
-  --fedprox_k 0.01 \
-  --k_kd_feature 0.3 --k_kd_output 0.3 \
-  --gmm --gmm_k 12 \
-  --adaptive
+python main.py --dataset EMNIST-Letters-shuffle --data_split_file data_split/EMNIST_letters_shuffle_split_cn8_tn6_cet2_cs2_s2571.pkl --num_glob_iters 60 --local_epochs 100 --lr 1e-4 --flow_lr 1e-3 --k_loss_flow 0.05 --k_flow_lastflow 0.02 --flow_explore_theta 0.5 --fedprox_k 0.01 --k_kd_feature 0.3 --k_kd_output 0.3 --gmm --gmm_k 12 --adaptive
