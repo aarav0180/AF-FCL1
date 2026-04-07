@@ -258,6 +258,20 @@ python main.py \
   --malicious_client_num $M
 ```
 
+---
+
+## Experimental Extensions
+
+The following implementation flags are available in `main.py` and are off by default:
+
+- `--acta`: attention-based server aggregation with client task embeddings.
+- `--gcar`: gradient conflict-aware replay for classifier updates.
+- `--hmce`: multi-branch normalizing flow replay.
+- `--cpr`: contrastive prototype replay on top of flow replay.
+- `--maft`: learnable replay/KD gate based on batch statistics.
+
+These flags are intended to be used as modular experiments on top of the existing AF-FCL pipeline.
+
 #### Windows CMD
 ```cmd
 python main.py ^

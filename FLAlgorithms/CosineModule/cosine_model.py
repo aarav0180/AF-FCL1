@@ -92,8 +92,12 @@ class CosineMixin:
         weight_decay = args.weight_decay
         lr           = args.lr
 
+        classifier_params = list(self.classifier.parameters())
+        if getattr(self, 'maft_gate', None) is not None:
+            classifier_params += list(self.maft_gate.parameters())
+
         self.classifier_optimizer = optim.Adam(
-            self.classifier.parameters(),
+            classifier_params,
             lr=lr, weight_decay=weight_decay, betas=(beta1, beta2),
         )
         parameters_fb = [

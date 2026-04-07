@@ -28,13 +28,86 @@ class UserPreciseFCL(User):
         
         self.label_info=label_info
         self.args = args
+        self.prototype_bank = {}
+        self.prototype_momentum = getattr(args, 'cpr_momentum', 0.9)
         self.k_loss_flow = args.k_loss_flow
         self.classifier_head_list = classifier_head_list
         self.use_lastflow_x = args.use_lastflow_x
+
+    def _device(self):
+        if self.args.device == 'cuda' and torch.cuda.is_available():
+            return torch.device('cuda:0')
+        return torch.device('cpu')
+
+    def get_task_embedding(self, dataloader=None):
+        loader = dataloader if dataloader is not None else self.trainloaderfull
+        device = self._device()
+        self.model.eval()
+
+        embeddings = []
+        with torch.no_grad():
+            for x, _ in loader:
+                x = x.to(device)
+                xa = self.model.classifier.forward_to_xa(x)
+                embeddings.append(xa.reshape(xa.shape[0], -1).mean(dim=0).detach().cpu())
+
+        if len(embeddings) == 0:
+            return None
+        return torch.stack(embeddings).mean(dim=0)
+
+    def _compute_class_prototypes(self, dataloader=None):
+        loader = dataloader if dataloader is not None else self.trainloaderfull
+        device = self._device()
+        self.model.eval()
+
+        sums = {}
+        counts = {}
+
+        with torch.no_grad():
+            for x, y in loader:
+                x = x.to(device)
+                y = y.to(device)
+                xa = self.model.classifier.forward_to_xa(x)
+                xa = xa.reshape(xa.shape[0], -1)
+
+                for label in torch.unique(y):
+                    label_int = int(label.item())
+                    mask = y == label
+                    if mask.sum().item() == 0:
+                        continue
+                    proto = xa[mask].mean(dim=0).detach().cpu()
+                    if label_int not in sums:
+                        sums[label_int] = proto
+                        counts[label_int] = 1
+                    else:
+                        sums[label_int] = sums[label_int] + proto
+                        counts[label_int] = counts[label_int] + 1
+
+        prototypes = {}
+        for label, total_proto in sums.items():
+            prototypes[label] = total_proto / max(counts[label], 1)
+        return prototypes
+
+    def update_prototype_bank(self):
+        if not getattr(self.args, 'cpr', False):
+            return
+
+        current_prototypes = self._compute_class_prototypes(self.trainloaderfull)
+        for label, proto in current_prototypes.items():
+            old_proto = self.prototype_bank.get(label)
+            if old_proto is None:
+                self.prototype_bank[label] = proto.clone()
+            else:
+                self.prototype_bank[label] = (
+                    self.prototype_momentum * old_proto
+                    + (1.0 - self.prototype_momentum) * proto.clone()
+                )
         
 
     def next_task(self, train, test, label_info = None, if_label = True):
         
+        self.update_prototype_bank()
+
         # update last model:
         self.last_copy  = copy.deepcopy(self.model)
         # Respect args.device parameter
@@ -149,7 +222,8 @@ class UserPreciseFCL(User):
                 classes_so_far = self.classes_so_far,
                 classes_past_task = self.classes_past_task,
                 available_labels = self.available_labels,
-                available_labels_past = self.available_labels_past)
+                available_labels_past = self.available_labels_past,
+                prototype_bank=self.prototype_bank)
 
             #c_loss_all += result['c_loss']
             correct += cls_result['correct']

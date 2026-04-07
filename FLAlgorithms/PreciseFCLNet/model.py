@@ -17,6 +17,63 @@ from utils.utils import myitem
 
 eps = 1e-30
 
+
+class FeaturePermutation(nn.Module):
+    def __init__(self, feature_dim, mode='identity', seed=0):
+        super().__init__()
+        if mode == 'reverse':
+            perm = torch.arange(feature_dim - 1, -1, -1)
+        elif mode == 'random':
+            generator = torch.Generator()
+            generator.manual_seed(seed)
+            perm = torch.randperm(feature_dim, generator=generator)
+        else:
+            perm = torch.arange(feature_dim)
+
+        inv_perm = torch.empty_like(perm)
+        inv_perm[perm] = torch.arange(feature_dim)
+
+        self.register_buffer('perm', perm.long())
+        self.register_buffer('inv_perm', inv_perm.long())
+
+    def forward(self, x):
+        return x[..., self.perm]
+
+    def inverse(self, x):
+        return x[..., self.inv_perm]
+
+
+class MultiScaleFlow(nn.Module):
+    def __init__(self, flows, permutations, temperature=1.0):
+        super().__init__()
+        self.flows = nn.ModuleList(flows)
+        self.permutations = nn.ModuleList(permutations)
+        self.scale_logits = nn.Parameter(torch.zeros(len(flows)))
+        self.temperature = temperature
+
+    def log_prob(self, inputs, context=None):
+        weights = torch.softmax(self.scale_logits / max(self.temperature, 1e-6), dim=0)
+        log_probs = []
+        for flow, permutation in zip(self.flows, self.permutations):
+            transformed_inputs = permutation(inputs)
+            log_probs.append(flow.log_prob(inputs=transformed_inputs, context=context))
+
+        stacked = torch.stack(log_probs, dim=0)
+        return torch.logsumexp(torch.log(weights + 1e-12).unsqueeze(1) + stacked, dim=0)
+
+    def log_prob_and_noise(self, inputs, context=None):
+        weights = torch.softmax(self.scale_logits / max(self.temperature, 1e-6), dim=0)
+        branch = int(torch.argmax(weights).item())
+        transformed_inputs = self.permutations[branch](inputs)
+        log_prob, noise = self.flows[branch].log_prob_and_noise(transformed_inputs, context=context)
+        return log_prob, self.permutations[branch].inverse(noise)
+
+    def sample(self, num_samples, context=None):
+        weights = torch.softmax(self.scale_logits / max(self.temperature, 1e-6), dim=0)
+        branch = int(torch.argmax(weights).item())
+        samples = self.flows[branch].sample(num_samples=num_samples, context=context)
+        return self.permutations[branch].inverse(samples)
+
 def MultiClassCrossEntropy(logits, labels, T):
     logits = torch.pow(logits+eps, 1/T)
     logits = logits/(torch.sum(logits, dim=1, keepdim=True)+eps)
@@ -49,6 +106,15 @@ class PreciseModel(nn.Module):
         self.k_kd_output = args.k_kd_output
         self.k_flow_lastflow = args.k_flow_lastflow
 
+        self.gcar = getattr(args, 'gcar', False)
+        self.hmce = getattr(args, 'hmce', False)
+        self.hmce_scales = max(int(getattr(args, 'hmce_scales', 3)), 1)
+        self.cpr = getattr(args, 'cpr', False)
+        self.cpr_tau = float(getattr(args, 'cpr_tau', 0.2))
+        self.cpr_lambda = float(getattr(args, 'cpr_lambda', 0.1))
+        self.maft = getattr(args, 'maft', False)
+        self.maft_hidden = int(getattr(args, 'maft_hidden', 16))
+
         self.flow_explore_theta = args.flow_explore_theta
         self.fedprox_k = args.fedprox_k
 
@@ -62,27 +128,53 @@ class PreciseModel(nn.Module):
             self.num_classes = 26
             self.classifier = S_ConvNet(28, 1, c_channel_size, xa_dim=int(np.prod(self.xa_shape)), num_classes=self.num_classes)
             if self.algorithm == 'PreciseFCL':
-                self.flow = self.get_1d_nflow_model(feature_dim=int(np.prod(self.xa_shape)), hidden_feature=512, context_feature=self.num_classes,
-                                                num_layers=4)
+                if self.hmce:
+                    self.flow = self.get_hmce_nflow_model(feature_dim=int(np.prod(self.xa_shape)), hidden_feature=512, context_feature=self.num_classes,
+                                                          num_layers=4, num_scales=self.hmce_scales)
+                else:
+                    self.flow = self.get_1d_nflow_model(feature_dim=int(np.prod(self.xa_shape)), hidden_feature=512, context_feature=self.num_classes,
+                                                    num_layers=4)
         elif dataset=='CIFAR100':
             self.xa_shape=[512]
             self.num_classes = 100
             self.classifier = Resnet_plus(32, xa_dim=int(np.prod(self.xa_shape)), num_classes=self.num_classes)
             # self.classifier = S_ConvNet(32, 3, c_channel_size, xa_dim=int(np.prod(self.xa_shape)), num_classes=self.num_classes)
             if self.algorithm == 'PreciseFCL':
-                self.flow = self.get_1d_nflow_model(feature_dim=int(np.prod(self.xa_shape)), hidden_feature=512, context_feature=self.num_classes,
-                                                num_layers=4)
+                if self.hmce:
+                    self.flow = self.get_hmce_nflow_model(feature_dim=int(np.prod(self.xa_shape)), hidden_feature=512, context_feature=self.num_classes,
+                                                          num_layers=4, num_scales=self.hmce_scales)
+                else:
+                    self.flow = self.get_1d_nflow_model(feature_dim=int(np.prod(self.xa_shape)), hidden_feature=512, context_feature=self.num_classes,
+                                                    num_layers=4)
 
         elif dataset=='MNIST-SVHN-FASHION':
             self.xa_shape=[512]
             self.num_classes = 20
             self.classifier = S_ConvNet(32, 3, c_channel_size, xa_dim=int(np.prod(self.xa_shape)), num_classes=self.num_classes)
             if self.algorithm == 'PreciseFCL':
-                self.flow = self.get_1d_nflow_model(feature_dim=int(np.prod(self.xa_shape)), hidden_feature=512, context_feature=self.num_classes,
-                                                num_layers=4)
+                if self.hmce:
+                    self.flow = self.get_hmce_nflow_model(feature_dim=int(np.prod(self.xa_shape)), hidden_feature=512, context_feature=self.num_classes,
+                                                          num_layers=4, num_scales=self.hmce_scales)
+                else:
+                    self.flow = self.get_1d_nflow_model(feature_dim=int(np.prod(self.xa_shape)), hidden_feature=512, context_feature=self.num_classes,
+                                                    num_layers=4)
+
+        if self.maft:
+            self.maft_gate = nn.Sequential(
+                nn.Linear(3, self.maft_hidden),
+                nn.ReLU(),
+                nn.Linear(self.maft_hidden, 1),
+                nn.Sigmoid(),
+            )
+        else:
+            self.maft_gate = None
+
+        classifier_params = list(self.classifier.parameters())
+        if self.maft_gate is not None:
+            classifier_params += list(self.maft_gate.parameters())
 
         self.classifier_optimizer = optim.Adam(
-            self.classifier.parameters(),
+            classifier_params,
             lr=lr, weight_decay=weight_decay, betas=(beta1, beta2),
         )
 
@@ -107,6 +199,8 @@ class PreciseModel(nn.Module):
 
     def to(self, device):
         self.classifier.to(device)
+        if self.maft_gate is not None:
+            self.maft_gate.to(device)
         if self.algorithm == 'PreciseFCL':
             self.flow.to(device)
         self._device = device
@@ -119,6 +213,9 @@ class PreciseModel(nn.Module):
     def parameters(self):
         for param in  self.classifier.parameters():
             yield param
+        if self.maft_gate is not None:
+            for param in self.maft_gate.parameters():
+                yield param
         if self.algorithm == 'PreciseFCL':
             for param in  self.flow.parameters():
                 yield param
@@ -126,6 +223,9 @@ class PreciseModel(nn.Module):
     def named_parameters(self):
         for name, param in self.classifier.named_parameters():
             yield 'classifier.'+name, param
+        if self.maft_gate is not None:
+            for name, param in self.maft_gate.named_parameters():
+                yield 'maft_gate.'+name, param
         if self.algorithm == 'PreciseFCL':
             for name, param in self.flow.named_parameters():
                 yield 'flow.'+name, param
@@ -157,6 +257,59 @@ class PreciseModel(nn.Module):
         flow = Flow(transform, base_dist)
         return flow
 
+    def get_hmce_nflow_model(self,
+                        feature_dim,
+                        hidden_feature,
+                        context_feature,
+                        num_layers,
+                        num_scales):
+        flows = []
+        permutations = []
+        permutation_modes = ['identity', 'reverse', 'random']
+
+        for scale_idx in range(num_scales):
+            flows.append(self.get_1d_nflow_model(feature_dim, hidden_feature, context_feature, num_layers))
+            mode = permutation_modes[scale_idx % len(permutation_modes)]
+            permutations.append(FeaturePermutation(feature_dim, mode=mode, seed=scale_idx + 17))
+
+        return MultiScaleFlow(flows, permutations, temperature=1.0)
+
+    def _prototype_contrastive_loss(self, xa, labels, prototype_bank):
+        if not prototype_bank:
+            return torch.tensor(0.0, device=xa.device)
+
+        available_labels = []
+        prototypes = []
+        for label, proto in prototype_bank.items():
+            available_labels.append(int(label))
+            prototypes.append(proto.to(xa.device))
+
+        if len(prototypes) == 0:
+            return torch.tensor(0.0, device=xa.device)
+
+        label_to_idx = {label: idx for idx, label in enumerate(available_labels)}
+        selected = [i for i, label in enumerate(labels.tolist()) if int(label) in label_to_idx]
+        if len(selected) == 0:
+            return torch.tensor(0.0, device=xa.device)
+
+        proto_mat = torch.stack(prototypes, dim=0)
+        xa_sel = F.normalize(xa[selected], dim=1)
+        proto_mat = F.normalize(proto_mat, dim=1)
+        logits = xa_sel @ proto_mat.t() / max(self.cpr_tau, 1e-6)
+        target = torch.tensor([label_to_idx[int(labels[i].item())] for i in selected], device=xa.device)
+        return F.cross_entropy(logits, target)
+
+    def _maft_replay_scale(self, batch_acc, flow_prob_mean):
+        if self.maft_gate is None:
+            return torch.tensor(1.0, device=self.device)
+
+        gate_input = torch.tensor(
+            [[float(batch_acc), float(flow_prob_mean), float(self.flow_explore_theta)]],
+            dtype=torch.float32,
+            device=self.device,
+        )
+        return self.maft_gate(gate_input).squeeze()
+
     def train_a_batch(self,
                         x, y,
                         train_flow,
@@ -167,13 +320,14 @@ class PreciseModel(nn.Module):
                         classes_so_far,
                         classes_past_task,
                         available_labels,
-                        available_labels_past):
+                        available_labels_past,
+                        prototype_bank=None):
         
         # ===================
         # 1. prediction loss
         # ====================
         if not train_flow:
-            return self.train_a_batch_classifier(x, y, flow, last_classifier, global_classifier, classes_past_task, available_labels)
+            return self.train_a_batch_classifier(x, y, flow, last_classifier, global_classifier, classes_past_task, available_labels, prototype_bank=prototype_bank)
         else:
             return self.train_a_batch_flow(x, y, last_flow, classes_so_far, available_labels_past)
 
@@ -204,20 +358,46 @@ class PreciseModel(nn.Module):
                 flow_xa_prob[flow_label==flow_yi] = prob_mean
         return flow_xa_prob
         
-    def train_a_batch_classifier(self, x, y, flow, last_classifier, global_classifier, classes_past_task, available_labels):
-        
-        if self.algorithm == 'PreciseFCL' and type(flow)!=type(None) and self.k_loss_flow>0:
+    def train_a_batch_classifier(self, x, y, flow, last_classifier, global_classifier, classes_past_task, available_labels, prototype_bank=None):
+        device = self.device
+
+        softmax_output, xa, logits = self.classifier(x)
+        softmax_output = torch.clamp(softmax_output, min=eps, max=1.0)
+        c_loss_cls = self.classify_criterion(torch.log(softmax_output), y)
+
+        if self.algorithm == 'PreciseFCL':
+            kd_loss_feature_last, kd_loss_output_last, kd_loss_feature_global, kd_loss_output_global = \
+                self.knowledge_distillation_on_xa_output(x, xa, softmax_output, last_classifier, global_classifier)
+            kd_loss_feature = (kd_loss_feature_last + kd_loss_feature_global) * self.k_kd_feature
+            kd_loss_output = (kd_loss_output_last + kd_loss_output_global) * self.k_kd_output
+            kd_loss = kd_loss_feature + kd_loss_output
+        else:
+            kd_loss_feature, kd_loss_output, kd_loss = 0, 0, 0
+
+        current_proto_loss = self._prototype_contrastive_loss(xa, y, prototype_bank)
+        c_loss = c_loss_cls + kd_loss + self.cpr_lambda * current_proto_loss
+
+        correct = (torch.sum(torch.argmax(softmax_output, dim=1) == y)).item()
+        batch_acc = float(correct) / max(float(x.shape[0]), 1.0)
+
+        replay_loss_tensor = None
+        flow_xa_prob_mean = 0.0
+        prob_mean = 0.0
+        kd_loss_flow = 0.0
+        c_loss_flow = 0.0
+
+        if self.algorithm == 'PreciseFCL' and type(flow) != type(None) and self.k_loss_flow > 0:
             batch_size = x.shape[0]
 
             with torch.no_grad():
-                _, xa, _ = self.classifier(x)
-                xa = xa.reshape(xa.shape[0], -1)
+                _, xa_detached, _ = self.classifier(x)
+                xa_detached = xa_detached.reshape(xa_detached.shape[0], -1)
 
                 y_one_hot = F.one_hot(y, num_classes=self.num_classes).float()
-                log_prob, xa_u = flow.log_prob_and_noise(xa, y_one_hot)
+                log_prob, xa_u = flow.log_prob_and_noise(xa_detached, y_one_hot)
                 log_prob = log_prob.detach()
                 xa_u = xa_u.detach()
-                prob_mean = torch.exp(log_prob/xa.shape[1]).mean()+eps
+                prob_mean = torch.exp(log_prob / xa_detached.shape[1]).mean() + eps
 
                 flow_xa, label, _ = self.sample_from_flow(flow, available_labels, batch_size)
                 flow_xa_prob = self.probability_in_localdata(xa_u, y, prob_mean, flow_xa, label)
@@ -226,52 +406,119 @@ class PreciseModel(nn.Module):
 
             flow_xa = flow_xa.reshape(flow_xa.shape[0], *self.xa_shape)
             softmax_output_flow, _ = self.classifier.forward_from_xa(flow_xa)
-            # Clamp softmax values for numerical stability
             softmax_output_flow = torch.clamp(softmax_output_flow, min=eps, max=1.0)
-            c_loss_flow_generate = (self.classify_criterion_noreduce(torch.log(softmax_output_flow), torch.Tensor(label).long().to(self.device))*flow_xa_prob).mean()
-            # c_loss_flow_generate = self.classify_criterion(torch.log(softmax_output_flow+eps), torch.Tensor(label).long().cuda())
-            k_loss_flow_explore_forget = (1-self.flow_explore_theta)*prob_mean+self.flow_explore_theta
+            c_loss_flow_generate = (
+                self.classify_criterion_noreduce(torch.log(softmax_output_flow), torch.Tensor(label).long().to(device)) * flow_xa_prob
+            ).mean()
+            k_loss_flow_explore_forget = (1 - self.flow_explore_theta) * prob_mean + self.flow_explore_theta
 
-            kd_loss_output_last_flow, kd_loss_output_global_flow = self.knowledge_distillation_on_output(flow_xa, softmax_output_flow, last_classifier, global_classifier)
-            kd_loss_flow = (kd_loss_output_last_flow + kd_loss_output_global_flow)*self.k_kd_output
+            if self.cpr:
+                replay_proto_loss = self._prototype_contrastive_loss(
+                    flow_xa.reshape(flow_xa.shape[0], -1),
+                    torch.Tensor(label).long().to(device),
+                    prototype_bank,
+                )
+            else:
+                replay_proto_loss = torch.tensor(0.0, device=device)
 
-            c_loss_flow = (c_loss_flow_generate*k_loss_flow_explore_forget + kd_loss_flow)*self.k_loss_flow
-            
-            self.classifier_fb_optimizer.zero_grad()
-            c_loss_flow.backward()
-            # Gradient clipping to prevent explosion
-            torch.nn.utils.clip_grad_norm_(self.classifier.parameters(), max_norm=1.0, norm_type='2')
-            self.classifier_fb_optimizer.step()
-        else:
-            prob_mean = 0.0
+            kd_loss_output_last_flow, kd_loss_output_global_flow = self.knowledge_distillation_on_output(
+                flow_xa, softmax_output_flow, last_classifier, global_classifier
+            )
+            kd_loss_flow = (kd_loss_output_last_flow + kd_loss_output_global_flow) * self.k_kd_output
+
+            replay_loss_tensor = (
+                c_loss_flow_generate * k_loss_flow_explore_forget
+                + kd_loss_flow
+                + self.cpr_lambda * replay_proto_loss
+            ) * self.k_loss_flow
+
+            replay_scale = self._maft_replay_scale(batch_acc, float(flow_xa_prob_mean.detach().item()))
+            replay_loss_tensor = replay_loss_tensor * replay_scale
+            c_loss_flow = replay_loss_tensor
+
+        if torch.isnan(c_loss) or torch.isinf(c_loss):
+            logger.warning("NaN or Inf detected in current loss! Skipping this batch.")
+            return {'c_loss': 0.0, 'kd_loss': 0.0, 'correct': 0, 'flow_prob_mean': 0.0,
+                    'c_loss_flow': 0.0, 'kd_loss_flow': 0.0, 'kd_loss_feature': 0.0, 'kd_loss_output': 0.0}
+
+        if replay_loss_tensor is not None and (torch.isnan(replay_loss_tensor) or torch.isinf(replay_loss_tensor)):
+            logger.warning("NaN or Inf detected in replay loss! Dropping replay contribution for this batch.")
+            replay_loss_tensor = None
             c_loss_flow = 0.0
-            kd_loss_flow = 0.0
-            flow_xa_prob_mean = 0.0
 
-        softmax_output, xa, logits = self.classifier(x)
-        
-        # Clamp softmax values for numerical stability
-        softmax_output = torch.clamp(softmax_output, min=eps, max=1.0)
-        c_loss_cls = self.classify_criterion(torch.log(softmax_output), y)
+        if self.gcar and replay_loss_tensor is not None:
+            params = [param for param in self.classifier.parameters() if param.requires_grad]
+            if self.maft_gate is not None:
+                params += [param for param in self.maft_gate.parameters() if param.requires_grad]
+            current_grads = torch.autograd.grad(c_loss, params, retain_graph=True, allow_unused=True)
+            replay_grads = torch.autograd.grad(replay_loss_tensor, params, retain_graph=True, allow_unused=True)
 
-        if self.algorithm=='PreciseFCL':
-            kd_loss_feature_last, kd_loss_output_last, kd_loss_feature_global, kd_loss_output_global = \
-                                    self.knowledge_distillation_on_xa_output(x, xa, softmax_output, last_classifier, global_classifier)
-            kd_loss_feature = (kd_loss_feature_last + kd_loss_feature_global)*self.k_kd_feature
-            kd_loss_output = (kd_loss_output_last + kd_loss_output_global)*self.k_kd_output
-            kd_loss = kd_loss_feature + kd_loss_output
+            flat_current_list = []
+            flat_replay_list = []
+            for param, current_grad, replay_grad in zip(params, current_grads, replay_grads):
+                if current_grad is None:
+                    current_grad = torch.zeros_like(param)
+                if replay_grad is None:
+                    replay_grad = torch.zeros_like(param)
+                flat_current_list.append(current_grad.reshape(-1))
+                flat_replay_list.append(replay_grad.reshape(-1))
+
+            flat_current = torch.cat(flat_current_list) if len(flat_current_list) > 0 else torch.tensor([], device=device)
+            flat_replay = torch.cat(flat_replay_list) if len(flat_replay_list) > 0 else torch.tensor([], device=device)
+
+            if flat_current.numel() > 0 and flat_replay.numel() > 0:
+                dot = torch.dot(flat_current, flat_replay)
+                norm_current = flat_current.norm().clamp_min(eps)
+                norm_replay = flat_replay.norm().clamp_min(eps)
+                beta = torch.sigmoid(dot / (norm_current * norm_replay + eps))
+            else:
+                dot = torch.tensor(0.0, device=device)
+                beta = torch.tensor(1.0, device=device)
+
+            final_grads = []
+            for param, current_grad, replay_grad in zip(params, current_grads, replay_grads):
+                if current_grad is None:
+                    current_grad = torch.zeros_like(param)
+                if replay_grad is None:
+                    replay_grad = torch.zeros_like(param)
+                if dot.item() < 0:
+                    denom = current_grad.reshape(-1).dot(current_grad.reshape(-1)).clamp_min(eps)
+                    replay_grad = replay_grad - (replay_grad.reshape(-1).dot(current_grad.reshape(-1)) / denom) * current_grad
+                final_grads.append(current_grad + beta * replay_grad)
+
+            self.classifier_optimizer.zero_grad()
+            for param, grad in zip(params, final_grads):
+                if grad is not None:
+                    param.grad = grad
+            torch.nn.utils.clip_grad_norm_(params, max_norm=1.0, norm_type='2')
+            self.classifier_optimizer.step()
         else:
-            kd_loss_feature, kd_loss_output, kd_loss  = 0,0,0
+            if replay_loss_tensor is not None and (self.maft or self.cpr):
+                self.classifier_optimizer.zero_grad()
+                (c_loss + replay_loss_tensor).backward()
+                clip_params = list(self.classifier.parameters())
+                if self.maft_gate is not None:
+                    clip_params += list(self.maft_gate.parameters())
+                torch.nn.utils.clip_grad_norm_(clip_params, max_norm=1.0, norm_type='2')
+                self.classifier_optimizer.step()
+            else:
+                if replay_loss_tensor is not None:
+                    self.classifier_fb_optimizer.zero_grad()
+                    replay_loss_tensor.backward(retain_graph=True)
+                    clip_params = list(self.classifier.parameters())
+                    if self.maft_gate is not None:
+                        clip_params += list(self.maft_gate.parameters())
+                    torch.nn.utils.clip_grad_norm_(clip_params, max_norm=1.0, norm_type='2')
+                    self.classifier_fb_optimizer.step()
 
-        c_loss = c_loss_cls + kd_loss
-
-        correct = (torch.sum(torch.argmax(softmax_output, dim=1) == y)).item()
-
-        self.classifier_optimizer.zero_grad()
-        c_loss.backward()
-        # Gradient clipping to prevent explosion
-        torch.nn.utils.clip_grad_norm_(self.classifier.parameters(), max_norm=1.0, norm_type='2')
-        self.classifier_optimizer.step()
+                self.classifier_fb_optimizer.zero_grad()
+                self.classifier_optimizer.zero_grad()
+                c_loss.backward()
+                clip_params = list(self.classifier.parameters())
+                if self.maft_gate is not None:
+                    clip_params += list(self.maft_gate.parameters())
+                torch.nn.utils.clip_grad_norm_(clip_params, max_norm=1.0, norm_type='2')
+                self.classifier_optimizer.step()
 
         prob_mean = myitem(prob_mean)
         c_loss_flow = myitem(c_loss_flow)
@@ -279,13 +526,8 @@ class PreciseModel(nn.Module):
         kd_loss_flow = myitem(kd_loss_flow)
         kd_loss_feature = myitem(kd_loss_feature)
         kd_loss_output = myitem(kd_loss_output)
-        
-        # Check for NaN and clip if necessary
+
         c_loss_val = c_loss.item()
-        if torch.isnan(c_loss) or torch.isinf(c_loss):
-            logger.warning("NaN or Inf detected in loss! Skipping this batch.")
-            return {'c_loss': 0.0, 'kd_loss': 0.0, 'correct': 0, 'flow_prob_mean': 0.0,
-                    'c_loss_flow': 0.0, 'kd_loss_flow': 0.0, 'kd_loss_feature': 0.0, 'kd_loss_output': 0.0}
 
         return {'c_loss': c_loss_val, 'kd_loss': kd_loss, 'correct': correct, 'flow_prob_mean': flow_xa_prob_mean,
                  'c_loss_flow': c_loss_flow, 'kd_loss_flow': kd_loss_flow, 'kd_loss_feature': kd_loss_feature, 'kd_loss_output': kd_loss_output}
