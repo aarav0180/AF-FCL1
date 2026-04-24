@@ -512,18 +512,20 @@ class PreciseModel(nn.Module):
                 torch.nn.utils.clip_grad_norm_(clip_params, max_norm=1.0, norm_type='2')
                 self.classifier_optimizer.step()
             else:
-                if replay_loss_tensor is not None:
-                    self.classifier_fb_optimizer.zero_grad()
-                    replay_loss_tensor.backward(retain_graph=True)
-                    clip_params = list(self.classifier.parameters())
-                    if self.maft_gate is not None:
-                        clip_params += list(self.maft_gate.parameters())
-                    torch.nn.utils.clip_grad_norm_(clip_params, max_norm=1.0, norm_type='2')
-                    self.classifier_fb_optimizer.step()
-
-                self.classifier_fb_optimizer.zero_grad()
                 self.classifier_optimizer.zero_grad()
-                c_loss.backward()
+                if hasattr(self, 'classifier_fb_optimizer'):
+                    self.classifier_fb_optimizer.zero_grad()
+
+                c_loss.backward(retain_graph=True)
+
+                if replay_loss_tensor is not None:
+                    fc2_params = [p for n, p in self.classifier.named_parameters() if 'fc2' in n and p.requires_grad]
+                    if len(fc2_params) > 0:
+                        replay_grads = torch.autograd.grad(replay_loss_tensor, fc2_params, retain_graph=True, allow_unused=True)
+                        for p, g in zip(fc2_params, replay_grads):
+                            if g is not None:
+                                p.grad += g
+
                 clip_params = list(self.classifier.parameters())
                 if self.maft_gate is not None:
                     clip_params += list(self.maft_gate.parameters())
