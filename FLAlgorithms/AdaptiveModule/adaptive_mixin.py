@@ -60,7 +60,7 @@ class AdaptiveMixin:
 
     def train_a_batch_classifier(
         self, x, y, flow, last_classifier, global_classifier,
-        classes_past_task, available_labels
+        classes_past_task, available_labels, prototype_bank=None
     ):
         # Stash y and reset alpha so knowledge_distillation_on_xa_output can
         # compute it lazily from the actual softmax_output (no extra fwd pass).
@@ -68,7 +68,7 @@ class AdaptiveMixin:
         self._adaptive_alpha = None
         return super().train_a_batch_classifier(
             x, y, flow, last_classifier, global_classifier,
-            classes_past_task, available_labels,
+            classes_past_task, available_labels, prototype_bank=prototype_bank,
         )
 
     def knowledge_distillation_on_xa_output(

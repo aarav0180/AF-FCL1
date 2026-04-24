@@ -1,6 +1,7 @@
 """
 CosineLinear — drop-in replacement for nn.Linear that uses cosine similarity
-instead of a raw dot product for the final classification head.
+with an optional additive angular margin (ArcFace-style) for the final
+classification head.
 
 Why this helps continual learning
 -----------------------------------
@@ -19,6 +20,15 @@ Because magnitudes are divided out, no class can dominate by being "bigger".
 The model must learn the *direction* (geometry) of each class in feature
 space, which is a strictly harder and more stable objective.
 
+Angular Margin (ArcFace-style)
+-------------------------------
+When --cosine_margin > 0, during training the cosine logit for the
+ground-truth class is replaced by  cos(θ + m), where m is the additive
+angular margin.  This enforces a decision gap between classes in angular
+space, producing tighter clusters and more discriminative features.
+
+At inference time the margin is disabled — predictions use pure cos(θ).
+
 Temperature parameter σ (self.sigma)
 --------------------------------------
 Raw cosine values lie in [-1, +1].  If we fed them directly into NLLLoss
@@ -28,15 +38,6 @@ allowing the softmax to become sharp and gradients to flow normally.
 
 σ is a single scalar parameter — it is included in model.named_parameters()
 and therefore federated automatically with zero special casing.
-
-Usage
------
-Replace:
-    self.fc_classifier = nn.Linear(xa_dim, num_classes)
-With:
-    self.fc_classifier = CosineLinear(xa_dim, num_classes)
-
-The rest of the forward pass (softmax, NLLLoss) is completely unchanged.
 """
 
 import math
@@ -47,7 +48,8 @@ import torch.nn.functional as F
 
 class CosineLinear(nn.Module):
     """
-    Cosine-similarity classification head with a learnable temperature.
+    Cosine-similarity classification head with learnable temperature and
+    optional additive angular margin (ArcFace-style).
 
     Parameters
     ----------
@@ -57,12 +59,17 @@ class CosineLinear(nn.Module):
         Number of classes.
     sigma_init : float
         Initial value of the temperature scalar σ.  Default: 10.0.
+    margin : float
+        Additive angular margin in radians (ArcFace-style). Applied only
+        during training on the ground-truth class logit.  Default: 0.0.
     """
 
-    def __init__(self, in_features: int, out_features: int, sigma_init: float = 10.0):
+    def __init__(self, in_features: int, out_features: int,
+                 sigma_init: float = 10.0, margin: float = 0.0):
         super().__init__()
         self.in_features  = in_features
         self.out_features = out_features
+        self.margin = margin
 
         # Class prototypes — same shape as nn.Linear weight matrix
         self.weight = nn.Parameter(torch.Tensor(out_features, in_features))
@@ -76,11 +83,15 @@ class CosineLinear(nn.Module):
         # Kaiming uniform initialisation (same default as nn.Linear)
         nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, labels: torch.Tensor = None) -> torch.Tensor:
         """
         Parameters
         ----------
         x : torch.Tensor, shape [N, in_features]
+        labels : torch.Tensor, shape [N], optional
+            Ground-truth class indices. When provided AND self.training AND
+            self.margin > 0, an additive angular margin is applied to the
+            ground-truth class logit (ArcFace-style).
 
         Returns
         -------
@@ -94,10 +105,23 @@ class CosineLinear(nn.Module):
         # Cosine similarity: x_norm @ w_norm^T → [N, C]
         cos_sim = x_norm @ w_norm.t()
 
+        # Apply angular margin during training if enabled
+        if self.training and self.margin > 0 and labels is not None:
+            # ArcFace: replace cos(θ) with cos(θ + m) for the true class
+            cos_sim = cos_sim.clamp(-1.0 + 1e-7, 1.0 - 1e-7)
+            theta = torch.acos(cos_sim)
+            # Only add margin to ground-truth class
+            one_hot = F.one_hot(labels, num_classes=self.out_features).float()
+            cos_sim = torch.cos(theta + self.margin * one_hot)
+
+        # Clamp sigma to prevent excessive gradient scaling on high-class datasets
+        sigma_clamped = torch.clamp(self.sigma, min=1.0, max=30.0)
+
         # Scale by temperature
-        return self.sigma * cos_sim
+        return sigma_clamped * cos_sim
 
     def extra_repr(self) -> str:
         return (f"in_features={self.in_features}, "
                 f"out_features={self.out_features}, "
-                f"sigma_init={self.sigma.item():.1f}")
+                f"sigma_init={self.sigma.item():.1f}, "
+                f"margin={self.margin:.3f}")

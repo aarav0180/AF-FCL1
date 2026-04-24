@@ -77,9 +77,11 @@ def _pick_model(args):
 def create_server_n_user(args, i):
     model = _pick_model(args)
 
-    # Server: GMMServerPreciseFCL whenever a GMM model is active (it hooks
-    # fit_gmm_prior into the task-transition logic via GMMUserPreciseFCL).
-    if getattr(args, 'gmm', False):
+    # ACTA is a server-side aggregation strategy; it can coexist with GMM.
+    if getattr(args, 'acta', False):
+        from FLAlgorithms.ACTAModule.acta_server import ACTAServerPreciseFCL
+        server = ACTAServerPreciseFCL(args, model, i)
+    elif getattr(args, 'gmm', False):
         from FLAlgorithms.GMMModule.gmm_server import GMMServerPreciseFCL
         server = GMMServerPreciseFCL(args, model, i)
     else:
@@ -132,6 +134,40 @@ if __name__ == "__main__":
     parser.add_argument('--gmm_k', type=int, default=4,
                         help='Number of GMM components (default: 4)')
 
+    # ACTA: attention-based aggregation on the server
+    parser.add_argument('--acta', action='store_true',
+                        help='Use Adaptive Client-Task Attention aggregation instead of FedAvg')
+    parser.add_argument('--acta_tau', type=float, default=0.5,
+                        help='Softmax temperature for ACTA attention weights (default: 0.5)')
+    parser.add_argument('--acta_momentum', type=float, default=0.9,
+                        help='EMA momentum for ACTA prototype bank updates (default: 0.9)')
+
+    # GCAR: gradient conflict-aware replay
+    parser.add_argument('--gcar', action='store_true',
+                        help='Use gradient conflict-aware replay when combining current and replay losses')
+
+    # HMCE: hierarchical multi-scale correlation estimation
+    parser.add_argument('--hmce', action='store_true',
+                        help='Use a multi-branch normalizing flow over multiple feature permutations')
+    parser.add_argument('--hmce_scales', type=int, default=3,
+                        help='Number of HMCE flow branches (default: 3)')
+
+    # CPR: contrastive prototype replay
+    parser.add_argument('--cpr', action='store_true',
+                        help='Add contrastive prototype replay on top of flow replay')
+    parser.add_argument('--cpr_tau', type=float, default=0.2,
+                        help='Temperature for CPR prototype contrastive loss (default: 0.2)')
+    parser.add_argument('--cpr_lambda', type=float, default=0.1,
+                        help='Weight for CPR prototype loss (default: 0.1)')
+    parser.add_argument('--cpr_momentum', type=float, default=0.9,
+                        help='EMA momentum for per-class prototype updates (default: 0.9)')
+
+    # MAFT: meta-learned forgetting threshold (synchronous approximation)
+    parser.add_argument('--maft', action='store_true',
+                        help='Use a learnable forgetting-threshold gate to scale replay/KD')
+    parser.add_argument('--maft_hidden', type=int, default=16,
+                        help='Hidden size of the MAFT gate MLP (default: 16)')
+
     # KLReg: gradient clipping + optional Jacobian KL regularisation for flow
     parser.add_argument('--klreg', action='store_true',
                         help='Stabilise flow training: gradient clip + Jacobian KL reg')
@@ -149,6 +185,12 @@ if __name__ == "__main__":
                         help='Replace nn.Linear classifier head with CosineLinear (L2-normalised weights + learnable temperature σ)')
     parser.add_argument('--cosine_sigma', type=float, default=10.0,
                         help='Initial temperature σ for CosineLinear head (default: 10.0)')
+    parser.add_argument('--cosine_margin', type=float, default=0.0,
+                        help='Additive angular margin in radians (ArcFace-style, 0=off, try 0.1-0.3)')
+    parser.add_argument('--cosine_calibration', action='store_true',
+                        help='Add BatchNorm1d before cosine head for feature calibration')
+    parser.add_argument('--cosine_ewc', type=float, default=0.0,
+                        help='EWC regularization weight (0=off, try 100-5000 for continual learning)')
 
     # optimizer
     parser.add_argument('--lr', type=float, default=1e-04)  

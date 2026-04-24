@@ -48,10 +48,19 @@ class GMMPreciseModel(PreciseModel):
 
         if self.flow is not None:
             feature_dim = int(np.prod(self.xa_shape))
-            # Build the GMM prior and replace StandardNormal inside the flow.
+            # Build the GMM prior(s) and replace StandardNormal inside the flow.
             # TaskGMMPrior starts unfitted (falls back to N(0,I) for task 0).
-            self._gmm_prior = TaskGMMPrior(feature_dim=feature_dim, K=self.gmm_k)
-            self.flow._distribution = self._gmm_prior
+            if hasattr(self.flow, 'flows'):
+                self._gmm_prior = torch.nn.ModuleList([
+                    TaskGMMPrior(feature_dim=feature_dim, K=self.gmm_k)
+                    for _ in range(len(self.flow.flows))
+                ])
+                for branch, prior in zip(self.flow.flows, self._gmm_prior):
+                    branch._distribution = prior
+            else:
+                self._gmm_prior = TaskGMMPrior(feature_dim=feature_dim, K=self.gmm_k)
+                self.flow._distribution = self._gmm_prior
+
             logger.info(
                 "GMM prior installed in flow: K=%d components, feature_dim=%d",
                 self.gmm_k, feature_dim,
@@ -94,27 +103,32 @@ class GMMPreciseModel(PreciseModel):
         self.classifier.eval()
         self.flow.eval()
 
-        z_list = []
-        with torch.no_grad():
-            for x_batch, y_batch in trainloader:
-                x_batch = x_batch.to(device)
-                y_batch = y_batch.to(device)
+        def _fit_single_branch(branch_flow, prior):
+            z_list = []
+            with torch.no_grad():
+                for x_batch, y_batch in trainloader:
+                    x_batch = x_batch.to(device)
+                    y_batch = y_batch.to(device)
 
-                xa = self.classifier.forward_to_xa(x_batch)
-                xa = xa.reshape(xa.shape[0], -1)                      # [N, 512]
+                    xa = self.classifier.forward_to_xa(x_batch)
+                    xa = xa.reshape(xa.shape[0], -1)
 
-                # Class-conditioned context (same as during flow training)
-                y_one_hot = F.one_hot(y_batch, num_classes=self.num_classes).float()
-                embedded_ctx = self.flow._embedding_net(y_one_hot)
+                    y_one_hot = F.one_hot(y_batch, num_classes=self.num_classes).float()
+                    embedded_ctx = branch_flow._embedding_net(y_one_hot)
+                    z, _ = branch_flow._transform(xa, context=embedded_ctx)
+                    z_list.append(z.cpu().numpy())
 
-                # Latent code under the CURRENT transform (no log-det needed)
-                z, _ = self.flow._transform(xa, context=embedded_ctx)  # [N, 512]
-                z_list.append(z.cpu().numpy())
+            z_all = np.concatenate(z_list, axis=0)
+            logger.info(
+                "Fitting GMM prior on %d latent codes (K=%d)...",
+                z_all.shape[0], self.gmm_k,
+            )
+            prior.fit(z_all)
 
-        z_all = np.concatenate(z_list, axis=0)   # [N_total, 512]
-        logger.info(
-            "Fitting GMM prior on %d latent codes (K=%d)...",
-            z_all.shape[0], self.gmm_k,
-        )
-        self._gmm_prior.fit(z_all)
+        if hasattr(self.flow, 'flows'):
+            for branch_flow, prior in zip(self.flow.flows, self._gmm_prior):
+                _fit_single_branch(branch_flow, prior)
+        else:
+            _fit_single_branch(self.flow, self._gmm_prior)
+
         logger.info("GMM prior fitted successfully.")
