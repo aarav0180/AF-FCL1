@@ -80,9 +80,13 @@ class CosineMixin:
                 # Training: use standard linear (IDENTICAL to baseline)
                 return original_forward(x)
             else:
-                # Eval/Test: cosine-normalized logits
+                # 🔥 FIX: move weights to same device
+                fc_device = x.device
+
                 x_norm = F.normalize(x, p=2, dim=1)
-                w_norm = F.normalize(fc.weight, p=2, dim=1)
+                w = fc.weight.to(fc_device)
+                w_norm = F.normalize(w, p=2, dim=1)
+
                 cos_sim = x_norm @ w_norm.t()
                 return sigma * cos_sim
 
