@@ -59,9 +59,6 @@ class CosineMixin:
         if args.dataset == 'CIFAR100' and self.cosine_wnorm_lambda > 0:
             self.cosine_wnorm_lambda = min(self.cosine_wnorm_lambda, 10.0)
 
-        # Store reference to the original fc_classifier forward
-        self._original_fc_forward = self.classifier.fc_classifier.forward
-
         # Install the eval-time cosine hook
         self._install_cosine_eval_hook()
 
@@ -69,24 +66,23 @@ class CosineMixin:
         """
         Replace fc_classifier.forward with a version that switches between
         standard linear (training) and cosine-normalized (eval) behavior.
+
+        Uses F.linear with live fc.weight/fc.bias references (not a captured
+        bound method) so the correct device is always used after .to(cuda).
         """
         fc = self.classifier.fc_classifier
-        original_forward = self._original_fc_forward
         sigma = self.cosine_sigma
         parent = self  # reference to access training flag
 
         def cosine_aware_forward(x):
             if parent.classifier.training:
-                # Training: use standard linear (IDENTICAL to baseline)
-                return original_forward(x)
+                # Training: standard linear using LIVE weight/bias tensors
+                # (NOT a bound method — reads fc.weight directly each call)
+                return F.linear(x, fc.weight, fc.bias)
             else:
-                # 🔥 FIX: move weights to same device
-                fc_device = x.device
-
+                # Eval/Test: cosine-normalized logits
                 x_norm = F.normalize(x, p=2, dim=1)
-                w = fc.weight.to(fc_device)
-                w_norm = F.normalize(w, p=2, dim=1)
-
+                w_norm = F.normalize(fc.weight, p=2, dim=1)
                 cos_sim = x_norm @ w_norm.t()
                 return sigma * cos_sim
 
