@@ -366,11 +366,7 @@ class PreciseModel(nn.Module):
     def train_a_batch_classifier(self, x, y, flow, last_classifier, global_classifier, classes_past_task, available_labels, prototype_bank=None):
         device = self.device
 
-        # Pass labels so CosineLinear can apply angular margin (no-op for nn.Linear)
-        if hasattr(self.classifier, 'forward') and 'labels' in self.classifier.forward.__code__.co_varnames:
-            softmax_output, xa, logits = self.classifier(x, labels=y)
-        else:
-            softmax_output, xa, logits = self.classifier(x)
+        softmax_output, xa, logits = self.classifier(x)
         softmax_output = torch.clamp(softmax_output, min=eps, max=1.0)
         c_loss_cls = self.classify_criterion(torch.log(softmax_output), y)
 
@@ -414,12 +410,7 @@ class PreciseModel(nn.Module):
                 flow_xa_prob_mean = flow_xa_prob.mean()
 
             flow_xa = flow_xa.reshape(flow_xa.shape[0], *self.xa_shape)
-            flow_labels_tensor = torch.Tensor(label).long().to(device)
-            # Pass labels so CosineLinear can apply angular margin on replay too
-            if hasattr(self.classifier.forward_from_xa, '__code__') and 'labels' in self.classifier.forward_from_xa.__code__.co_varnames:
-                softmax_output_flow, _ = self.classifier.forward_from_xa(flow_xa, labels=flow_labels_tensor)
-            else:
-                softmax_output_flow, _ = self.classifier.forward_from_xa(flow_xa)
+            softmax_output_flow, _ = self.classifier.forward_from_xa(flow_xa)
             softmax_output_flow = torch.clamp(softmax_output_flow, min=eps, max=1.0)
             c_loss_flow_generate = (
                 self.classify_criterion_noreduce(torch.log(softmax_output_flow), torch.Tensor(label).long().to(device)) * flow_xa_prob

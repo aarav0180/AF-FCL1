@@ -1,17 +1,27 @@
 """
-Cosine-head model variants — CosineMixin swaps the classifier head, composable
-with all existing mixins (GMM, KLReg, Adaptive).
+Cosine-head model variants — INFERENCE-TIME cosine normalization.
 
-Now includes:
-  - Angular margin (ArcFace-style) via --cosine_margin
-  - Feature calibration (BatchNorm) via --cosine_calibration
-  - EWC-style parameter importance regularization via --cosine_ewc
+KEY DESIGN CHANGE (v2):
+  Previous approach replaced the entire classifier with CosineLinear,
+  which destroyed the training dynamics that AF-FCL was tuned for.
+
+  New approach: Keep the standard nn.Linear for TRAINING (identical
+  gradient dynamics to baseline). Apply cosine normalization ONLY
+  during evaluation/inference, which removes magnitude bias when
+  it matters (test-time prediction on all classes seen so far).
+
+  This is inspired by LUCIR (Hou et al., CVPR 2019) which showed
+  that post-hoc weight normalization is sufficient to eliminate
+  the new-class bias in class-incremental learning.
+
+  Additionally, during training we add a lightweight weight-norm
+  regularizer that gently encourages prototype norms to stay balanced,
+  without changing the logit computation.
 """
 
-import numpy as np
 import torch
+import torch.nn.functional as F
 
-from FLAlgorithms.CosineModule.cosine_classifier import S_ConvNetCosine, ResnetPlusCosine
 from FLAlgorithms.PreciseFCLNet.model import PreciseModel
 from FLAlgorithms.GMMModule.gmm_model import GMMPreciseModel
 from FLAlgorithms.KLRegModule.klreg_models import KLRegPreciseModel, KLRegGMMPreciseModel
@@ -25,132 +35,80 @@ from FLAlgorithms.AdaptiveModule.adaptive_models import (
 
 class CosineMixin:
     """
-    Mixin that replaces the standard nn.Linear classification head with
-    CosineLinear immediately after the parent __init__ has built it.
+    Mixin that applies cosine normalization at INFERENCE TIME only.
 
-    New features:
-      - cosine_margin:       Additive angular margin (ArcFace-style)
-      - cosine_calibration:  BatchNorm before cosine head
-      - cosine_ewc:          EWC-style regularization weight
+    During training:
+      - Forward pass uses standard nn.Linear (y = xW^T + b) — IDENTICAL to baseline
+      - A lightweight weight-norm balance regularizer is added to the loss
+
+    During evaluation (model.eval()):
+      - fc_classifier.forward is monkey-patched to normalize both x and W
+      - Logits become σ * cos(θ), removing magnitude bias for test predictions
+
+    This preserves all training dynamics (gradients, flow, KD) while fixing
+    the magnitude bias that hurts old-class accuracy at test time.
     """
 
     def __init__(self, args):
-        super().__init__(args)   # PreciseModel (or GMM/KLReg variant) builds everything
+        super().__init__(args)   # PreciseModel builds everything normally
 
-        sigma_init = getattr(args, 'cosine_sigma', 10.0)
-        margin     = getattr(args, 'cosine_margin', 0.0)
-        calibration = getattr(args, 'cosine_calibration', False)
-        xa_dim     = int(np.prod(self.xa_shape))
-        dataset    = args.dataset
+        # Config
+        self.cosine_sigma = getattr(args, 'cosine_sigma', 10.0)
+        self.cosine_wnorm_lambda = getattr(args, 'cosine_ewc', 0.0)
+        # Scale down weight-norm regularizer for CIFAR100
+        if args.dataset == 'CIFAR100' and self.cosine_wnorm_lambda > 0:
+            self.cosine_wnorm_lambda = min(self.cosine_wnorm_lambda, 10.0)
 
-        # EWC importance tracking — scale down for large class-count datasets
-        raw_ewc = getattr(args, 'cosine_ewc', 0.0)
-        # CIFAR100 has 100 classes vs EMNIST's 26 — EWC needs to be much lighter
-        # to preserve plasticity for learning new task classes
-        if dataset == 'CIFAR100' and raw_ewc > 0:
-            self.cosine_ewc_lambda = min(raw_ewc, 50.0)  # cap at 50 for CIFAR100
-        else:
-            self.cosine_ewc_lambda = raw_ewc
-        self._ewc_params = {}    # {name: param_snapshot}
-        self._ewc_fisher = {}    # {name: fisher_diagonal}
+        # Store reference to the original fc_classifier forward
+        self._original_fc_forward = self.classifier.fc_classifier.forward
 
-        # Swap the classifier in-place — preserves all other layers
-        if 'EMNIST-Letters' in dataset or dataset == 'MNIST-SVHN-FASHION':
-            image_size         = 28 if 'EMNIST' in dataset else 32
-            image_channel_size = 1  if 'EMNIST' in dataset else 3
-            c_channel_size     = args.c_channel_size
-            self.classifier = S_ConvNetCosine(
-                image_size, image_channel_size, c_channel_size,
-                xa_dim=xa_dim, num_classes=self.num_classes,
-                sigma_init=sigma_init, margin=margin,
-                feature_calibration=calibration,
-            )
-        elif dataset == 'CIFAR100':
-            self.classifier = ResnetPlusCosine(
-                32, xa_dim=xa_dim, num_classes=self.num_classes,
-                sigma_init=sigma_init, margin=margin,
-                feature_calibration=calibration,
-            )
+        # Install the eval-time cosine hook
+        self._install_cosine_eval_hook()
 
-        # Rebuild the classifier optimisers to point at the new classifier.
-        import torch.optim as optim
-        beta1        = args.beta1
-        beta2        = args.beta2
-        weight_decay = args.weight_decay
-        lr           = args.lr
-
-        classifier_params = list(self.classifier.parameters())
-        if getattr(self, 'maft_gate', None) is not None:
-            classifier_params += list(self.maft_gate.parameters())
-
-        self.classifier_optimizer = optim.Adam(
-            classifier_params,
-            lr=lr, weight_decay=weight_decay, betas=(beta1, beta2),
-        )
-        parameters_fb = [
-            p for name, p in self.classifier.named_parameters()
-            if 'fc2' in name
-        ]
-        self.classifier_fb_optimizer = optim.Adam(
-            parameters_fb, lr=lr, weight_decay=weight_decay,
-            betas=(beta1, beta2),
-        )
-
-    def compute_ewc_fisher(self, dataloader, device, num_batches=50):
+    def _install_cosine_eval_hook(self):
         """
-        Compute diagonal Fisher Information Matrix after each task ends.
-        Called from the user's next_task() before deepcopy.
+        Replace fc_classifier.forward with a version that switches between
+        standard linear (training) and cosine-normalized (eval) behavior.
         """
-        if self.cosine_ewc_lambda <= 0:
-            return
+        fc = self.classifier.fc_classifier
+        original_forward = self._original_fc_forward
+        sigma = self.cosine_sigma
+        parent = self  # reference to access training flag
 
-        self.classifier.eval()
-        fisher = {n: torch.zeros_like(p) for n, p in self.classifier.named_parameters()}
-
-        count = 0
-        for x, y in dataloader:
-            if count >= num_batches:
-                break
-            x, y = x.to(device), y.to(device)
-            self.classifier.zero_grad()
-            p, _, logits = self.classifier(x)
-            p = torch.clamp(p, min=1e-30)
-            loss = torch.nn.functional.nll_loss(torch.log(p), y)
-            loss.backward()
-            for n, param in self.classifier.named_parameters():
-                if param.grad is not None:
-                    fisher[n] += param.grad.data.pow(2)
-            count += 1
-
-        # Average and store
-        for n in fisher:
-            fisher[n] /= max(count, 1)
-            # Merge with existing Fisher (running average across tasks)
-            if n in self._ewc_fisher:
-                self._ewc_fisher[n] = 0.5 * self._ewc_fisher[n] + 0.5 * fisher[n]
+        def cosine_aware_forward(x):
+            if parent.classifier.training:
+                # Training: use standard linear (IDENTICAL to baseline)
+                return original_forward(x)
             else:
-                self._ewc_fisher[n] = fisher[n]
+                # Eval/Test: cosine-normalized logits
+                x_norm = F.normalize(x, p=2, dim=1)
+                w_norm = F.normalize(fc.weight, p=2, dim=1)
+                cos_sim = x_norm @ w_norm.t()
+                return sigma * cos_sim
 
-        # Snapshot parameters
-        self._ewc_params = {
-            n: p.data.clone() for n, p in self.classifier.named_parameters()
-        }
-
-    def ewc_penalty(self):
-        """Compute EWC penalty term to add to classifier loss."""
-        if self.cosine_ewc_lambda <= 0 or len(self._ewc_fisher) == 0:
-            return 0.0
-
-        penalty = 0.0
-        for n, p in self.classifier.named_parameters():
-            if n in self._ewc_fisher and n in self._ewc_params:
-                penalty += (self._ewc_fisher[n] * (p - self._ewc_params[n]).pow(2)).sum()
-        return self.cosine_ewc_lambda * penalty
+        fc.forward = cosine_aware_forward
 
     def get_extra_classifier_loss(self):
-        """Called by PreciseModel.train_a_batch_classifier before backward.
-        Returns extra loss term (EWC penalty) to add to c_loss."""
-        return self.ewc_penalty()
+        """
+        Lightweight weight-norm balance regularizer.
+        Encourages all class prototype norms to be similar,
+        preventing magnitude drift across tasks.
+        
+        L_wnorm = λ * Var(||W_c||)
+        
+        This does NOT change the logits — it's a soft regularizer
+        on the weight matrix, keeping norms balanced so that the
+        eval-time cosine normalization works optimally.
+        """
+        if self.cosine_wnorm_lambda <= 0:
+            return 0.0
+
+        fc = self.classifier.fc_classifier
+        # Compute per-class prototype norms
+        w_norms = fc.weight.norm(dim=1)  # [num_classes]
+        # Variance of norms — penalize imbalance
+        norm_var = w_norms.var()
+        return self.cosine_wnorm_lambda * norm_var
 
 
 # ---------------------------------------------------------------------------
@@ -158,33 +116,33 @@ class CosineMixin:
 # ---------------------------------------------------------------------------
 
 class CosinePreciseModel(CosineMixin, PreciseModel):
-    """Baseline + cosine head."""
+    """Baseline + cosine eval head."""
     pass
 
 class CosineGMMPreciseModel(CosineMixin, GMMPreciseModel):
-    """GMM prior + cosine head."""
+    """GMM prior + cosine eval head."""
     pass
 
 class CosineKLRegPreciseModel(CosineMixin, KLRegPreciseModel):
-    """Stabilised flow (klreg) + cosine head."""
+    """Stabilised flow (klreg) + cosine eval head."""
     pass
 
 class CosineAdaptivePreciseModel(CosineMixin, AdaptivePreciseModel):
-    """Adaptive KD + cosine head."""
+    """Adaptive KD + cosine eval head."""
     pass
 
 class CosineKLRegGMMPreciseModel(CosineMixin, KLRegGMMPreciseModel):
-    """GMM prior + stabilised flow + cosine head."""
+    """GMM prior + stabilised flow + cosine eval head."""
     pass
 
 class CosineAdaptiveGMMPreciseModel(CosineMixin, AdaptiveGMMPreciseModel):
-    """GMM prior + adaptive KD + cosine head."""
+    """GMM prior + adaptive KD + cosine eval head."""
     pass
 
 class CosineAdaptiveKLRegPreciseModel(CosineMixin, AdaptiveKLRegPreciseModel):
-    """Stabilised flow + adaptive KD + cosine head."""
+    """Stabilised flow + adaptive KD + cosine eval head."""
     pass
 
 class CosineAdaptiveKLRegGMMPreciseModel(CosineMixin, AdaptiveKLRegGMMPreciseModel):
-    """GMM prior + stabilised flow + adaptive KD + cosine head."""
+    """GMM prior + stabilised flow + adaptive KD + cosine eval head."""
     pass
