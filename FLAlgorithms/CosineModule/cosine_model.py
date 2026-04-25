@@ -43,8 +43,14 @@ class CosineMixin:
         xa_dim     = int(np.prod(self.xa_shape))
         dataset    = args.dataset
 
-        # EWC importance tracking
-        self.cosine_ewc_lambda = getattr(args, 'cosine_ewc', 0.0)
+        # EWC importance tracking — scale down for large class-count datasets
+        raw_ewc = getattr(args, 'cosine_ewc', 0.0)
+        # CIFAR100 has 100 classes vs EMNIST's 26 — EWC needs to be much lighter
+        # to preserve plasticity for learning new task classes
+        if dataset == 'CIFAR100' and raw_ewc > 0:
+            self.cosine_ewc_lambda = min(raw_ewc, 50.0)  # cap at 50 for CIFAR100
+        else:
+            self.cosine_ewc_lambda = raw_ewc
         self._ewc_params = {}    # {name: param_snapshot}
         self._ewc_fisher = {}    # {name: fisher_diagonal}
 

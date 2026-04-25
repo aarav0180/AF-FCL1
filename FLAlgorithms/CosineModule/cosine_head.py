@@ -114,8 +114,9 @@ class CosineLinear(nn.Module):
             one_hot = F.one_hot(labels, num_classes=self.out_features).float()
             cos_sim = torch.cos(theta + self.margin * one_hot)
 
-        # Clamp sigma to prevent excessive gradient scaling on high-class datasets
-        sigma_clamped = torch.clamp(self.sigma, min=1.0, max=30.0)
+        # Clamp sigma — wider range for large class-count datasets (e.g. CIFAR100)
+        # Use a soft lower bound to keep gradients flowing
+        sigma_clamped = torch.clamp(self.sigma, min=1.0, max=50.0)
 
         # Scale by temperature
         return sigma_clamped * cos_sim
