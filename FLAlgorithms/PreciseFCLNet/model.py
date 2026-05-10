@@ -224,6 +224,17 @@ class PreciseModel(nn.Module):
                 flow_xa_prob = flow_xa_prob.detach()
                 flow_xa_prob_mean = flow_xa_prob.mean()
 
+                # --- Observational cosine similarity (no gradient, no training effect) ---
+                # Measures alignment between flow-generated replay features and real features.
+                # cos_sim = cosine(mean(flow_xa), mean(xa))  ∈ [-1, 1]
+                if flow_xa.shape[0] > 0 and xa.shape[0] > 0:
+                    cos_sim = F.cosine_similarity(
+                        flow_xa.reshape(flow_xa.shape[0], -1).mean(dim=0, keepdim=True),
+                        xa.mean(dim=0, keepdim=True)
+                    ).item()
+                else:
+                    cos_sim = 0.0
+
             flow_xa = flow_xa.reshape(flow_xa.shape[0], *self.xa_shape)
             softmax_output_flow, _ = self.classifier.forward_from_xa(flow_xa)
             # Clamp softmax values for numerical stability
@@ -247,6 +258,7 @@ class PreciseModel(nn.Module):
             c_loss_flow = 0.0
             kd_loss_flow = 0.0
             flow_xa_prob_mean = 0.0
+            cos_sim = 0.0
 
         softmax_output, xa, logits = self.classifier(x)
         
@@ -288,7 +300,8 @@ class PreciseModel(nn.Module):
                     'c_loss_flow': 0.0, 'kd_loss_flow': 0.0, 'kd_loss_feature': 0.0, 'kd_loss_output': 0.0}
 
         return {'c_loss': c_loss_val, 'kd_loss': kd_loss, 'correct': correct, 'flow_prob_mean': flow_xa_prob_mean,
-                 'c_loss_flow': c_loss_flow, 'kd_loss_flow': kd_loss_flow, 'kd_loss_feature': kd_loss_feature, 'kd_loss_output': kd_loss_output}
+                 'c_loss_flow': c_loss_flow, 'kd_loss_flow': kd_loss_flow, 'kd_loss_feature': kd_loss_feature, 'kd_loss_output': kd_loss_output,
+                 'cosine_sim': cos_sim}
 
     def knowledge_distillation_on_output(self, xa, softmax_output, last_classifier, global_classifier):
         if self.k_kd_last_cls>0 and type(last_classifier)!=type(None):

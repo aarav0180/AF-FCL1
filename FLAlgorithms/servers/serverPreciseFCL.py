@@ -9,6 +9,8 @@ from FLAlgorithms.PreciseFCLNet.model import PreciseModel
 from utils.dataset import get_dataset
 from utils.model_utils import read_user_data_PreciseFCL
 from utils.utils import str_in_list
+from utils.metrics_tracker import ResearchMetricsTracker
+from utils.cosine_analysis import CosineTracker
 
 class FedPrecise(Server):
     def __init__(self, args, model:PreciseModel, seed):
@@ -40,6 +42,18 @@ class FedPrecise(Server):
         # server model:
         self.model.to(device)
         # self.gaussian_intiailize(self.model.classifier)
+
+        # --- Research metrics tracker ---
+        N_TASKS = len(self.data['train_data'][self.data['client_names'][0]]['x'])
+        self.research_tracker = ResearchMetricsTracker(
+            output_dir=args.target_dir_name,
+            num_tasks=N_TASKS,
+            num_clients=len(self.users),
+            tb_log=getattr(args, 'tb_log', False),
+        )
+        # Cosine similarity tracker for replay analysis
+        self.cosine_tracker = CosineTracker(threshold=0.5)
+        self.current_task = 0  # explicit task counter for research tracker
 
     def init_users(self, data, args, model):
         self.users = []
@@ -186,6 +200,10 @@ class FedPrecise(Server):
                         
                     self.pickle_record['train'][glob_iter][user_id] = user_result
 
+                    # --- Feed cosine similarity into tracker ---
+                    if hasattr(self, 'cosine_tracker') and 'cosine_sim' in user_result:
+                        self.cosine_tracker.update(user_result['cosine_sim'])
+
                 # log training time
                 curr_timestamp = time.time()
                 train_time = (curr_timestamp - self.timestamp) / len(self.selected_users)
@@ -204,16 +222,41 @@ class FedPrecise(Server):
                 agg_time = curr_timestamp - self.timestamp
                 self.metrics['server_agg_time'].append(agg_time)
 
+                # --- Record communication cost for this round ---
+                if self.research_tracker is not None:
+                    self.research_tracker.record_communication_round(
+                        round_idx=glob_iter,
+                        model=self.model,
+                        num_clients=len(self.selected_users),
+                    )
+
             if self.algorithm != 'local':
                 # send parameteres: server -> client
                 self.send_parameters(mode='all', beta=1)
 
             self.evaluate_all_(glob_iter=glob_iter, matrix=True, personal=False)
 
+            # --- Collect cosine similarity stats for this task ---
+            if self.research_tracker is not None:
+                cosine_summary = self.cosine_tracker.get_task_summary()
+                self.research_tracker.record_cosine_stats(task, cosine_summary)
+                self.cosine_tracker.reset()  # reset for next task
+
             self.save_pickle()
 
-        # self.save_results(args)
-        # self.save_model()
+        # ===================================================================
+        #  FINAL RESEARCH ANALYSIS (runs once after all tasks complete)
+        # ===================================================================
+        if self.research_tracker is not None:
+            logger.info("\n[ResearchMetrics] Running final analysis...")
+            # Fairness analysis on final predictions
+            self.research_tracker.run_fairness_analysis(self.users)
+            # Generate all plots
+            self.research_tracker.generate_plots()
+            # Save all CSV/JSON
+            self.research_tracker.save_all()
+            # Print comprehensive summary
+            self.research_tracker.print_final_summary()
 
     def aggregate_parameters_(self, class_partial):
         assert (self.selected_users is not None and len(self.selected_users) > 0)

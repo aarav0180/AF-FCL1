@@ -174,7 +174,8 @@ class UserPreciseFCL(User):
 
         return {'acc': acc, 'c_loss': result_dict['c_loss'], 'kd_loss': result_dict['kd_loss'], 'flow_prob_mean': result_dict['flow_prob_mean'],
                  'flow_loss': result_dict['flow_loss'], 'flow_loss_last': result_dict['flow_loss_last'], 'c_loss_flow': result_dict['c_loss_flow'],
-                   'kd_loss_flow': result_dict['kd_loss_flow']}
+                   'kd_loss_flow': result_dict['kd_loss_flow'],
+                   'cosine_sim': result_dict.get('cosine_sim', 0.0)}
 
     def set_parameters(self, model, beta=1):
         '''

@@ -172,6 +172,8 @@ if __name__ == "__main__":
     parser.add_argument('--target_dir_name', type = str, default="output_dir", help="the dim of the solution")
     parser.add_argument("--debug", action="store_true", help="debug or not")
     parser.add_argument("--ssh", action="store_true", help="whether is run by search")
+    parser.add_argument("--tb_log", action="store_true",
+                        help="Enable TensorBoard logging of research metrics (forgetting, comm cost, fairness, cosine)")
 
     args = parser.parse_args()
 

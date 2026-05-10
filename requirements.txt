@@ -11,3 +11,4 @@ UMNN
 torch
 torchvision
 pytest
+pandas

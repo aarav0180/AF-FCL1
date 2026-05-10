@@ -40,6 +40,9 @@ class Server:
         self.metrics = {key:[] for key in METRICS}
         self.timestamp = None
         self.save_path = args.target_dir_name
+
+        # Research metrics tracker (initialised in subclass after data is loaded)
+        self.research_tracker = None
     
     def set_pickle_len(self):
         self.pickle_record['clients_train_len'] = {}
@@ -448,6 +451,15 @@ class Server:
         logger.info("Average Loss of each task: " + str(task_loss))
         logger.info("Average Loss of each user: " + str(user_loss))
         logger.info("Average Accuracy (classes so far) = {:.4f} %%, Loss = {:.2f}.".format(glob_acc*100, glob_loss))
+
+        # Feed accuracy data into research metrics tracker
+        if self.research_tracker is not None:
+            self.research_tracker.record_task_accuracy(
+                task_idx=getattr(self, 'current_task', 0),
+                task_accs=task_acc,
+                user_task_acc=user_task_acc,
+                glob_acc=glob_acc,
+            )
 
         self.pickle_record['test'][glob_iter] = {'acc': glob_acc,
                                                  'loss': glob_loss, 

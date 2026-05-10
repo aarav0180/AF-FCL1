@@ -24,10 +24,13 @@ env/
 datasets/PreciseFCL/cifar-100-python/
 datasets/PreciseFCL/EMNIST/
 datasets/PreciseFCL/data_split/
+*.tar.gz
 
 # Output / logs
 output/
 output_dir/
+plots/
+tb_logs/
 *.log
 
 # OS files
