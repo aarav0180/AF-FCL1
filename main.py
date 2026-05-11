@@ -150,6 +150,18 @@ if __name__ == "__main__":
     parser.add_argument('--cosine_sigma', type=float, default=10.0,
                         help='Initial temperature σ for CosineLinear head (default: 10.0)')
 
+    # Angular-geometry fixes for cosine head (all default OFF)
+    parser.add_argument('--vmf_prob', action='store_true',
+                        help='Use von Mises-Fisher angular probability for replay selection '
+                             'instead of Euclidean Gaussian (requires --cosine)')
+    parser.add_argument('--vmf_kappa_min', type=float, default=0.5,
+                        help='Min concentration κ for vMF probability (default: 0.5)')
+    parser.add_argument('--vmf_kappa_max', type=float, default=50.0,
+                        help='Max concentration κ for vMF probability (default: 50.0)')
+    parser.add_argument('--angular_kd', action='store_true',
+                        help='Use cosine-distance feature KD instead of L2 distance '
+                             '(requires --cosine)')
+
     # optimizer
     parser.add_argument('--lr', type=float, default=1e-04)  
     parser.add_argument('--beta1', type=float, default=0.9)
