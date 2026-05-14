@@ -1,0 +1,22 @@
+# EMNIST-shuffle: N=8, T=6, C=2
+# Paper C.3: lr=1e-4, global_rounds=60, local_iterations=100, batch_size=64
+# Shuffle: same tasks across clients, different order.
+
+# Step 1: Generate the split file
+python generate_emnist_shuffle_split_new.py
+
+# Step 2: Run training
+python main.py \
+    --dataset EMNIST-Letters-shuffle \
+    --datadir datasets/PreciseFCL/ \
+    --data_split_file data_split/EMNIST_letters_shuffle_cn8_tn6_cet2_s2571.pkl \
+    --algorithm PreciseFCL \
+    --seed 2571 \
+    --lr 1e-4 \
+    --flow_lr 1e-4 \
+    --num_glob_iters 60 \
+    --local_epochs 100 \
+    --batch_size 64 \
+    --device cuda \
+    --target_dir_name output_emnist_shuffle \
+    --train 1

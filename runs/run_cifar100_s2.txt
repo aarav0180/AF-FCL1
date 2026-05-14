@@ -1,0 +1,22 @@
+# CIFAR100 Setting 2 (D.2 challenging): N=8, T=6, C=10
+# Paper C.3 (CIFAR100): lr=1e-3, global_rounds=40, local_iterations=400, batch_size=64
+# 400 samples per class per client.
+
+# Step 1: Generate the split file
+python generate_cifar100_split_s2.py
+
+# Step 2: Run training
+python main.py \
+    --dataset CIFAR100 \
+    --datadir datasets/PreciseFCL/ \
+    --data_split_file data_split/CIFAR100_cn8_tn6_cet10_s2571.pkl \
+    --algorithm PreciseFCL \
+    --seed 2571 \
+    --lr 1e-3 \
+    --flow_lr 1e-3 \
+    --num_glob_iters 40 \
+    --local_epochs 400 \
+    --batch_size 64 \
+    --device cuda \
+    --target_dir_name output_cifar100_s2 \
+    --train 1

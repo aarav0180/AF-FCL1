@@ -8,7 +8,7 @@ Install all required packages:
 
 ```bash
 pip install -r requirements.txt
-pip install torch torchvision glog scikit-learn
+pip install torch torchvision glog scikit-learn pandas matplotlib seaborn
 ```
 
 ## Dataset Preparation
@@ -77,11 +77,20 @@ affect the existing `cs2` file. Raw EMNIST image files are shared between both.
 
 ### CIFAR100
 
-The dataset is downloaded automatically. Generate the split file once with:
+The dataset is downloaded automatically. Generate the split files once with:
 
 ```bash
 python generate_cifar100_split.py
 ```
+
+This script generates TWO split files matching the EXACT protocols from the AF-FCL paper (10 clients, 4 tasks, 20 classes per task, 400 train samples per class):
+
+1. **IID Setting** (all clients learn the same tasks in the same sequence):
+   `datasets/PreciseFCL/data_split/CIFAR100_IID_cn10_tn4_cet20_s2571.pkl`
+2. **Non-IID Setting** (heterogeneous Local Task Permutation):
+   `datasets/PreciseFCL/data_split/CIFAR100_NONIID_cn10_tn4_cet20_s2571.pkl`
+
+It also runs a validation suite and outputs distribution analysis plots into the `./plots/` directory.
 
 ### MNIST-SVHN-FASHION
 
@@ -318,37 +327,47 @@ python main.py `
 
 ### CIFAR100
 
-#### Linux / macOS
+The CIFAR100 setting now requires you to specify either the IID or Non-IID split file generated previously. The following command includes `--tb_log` to track research metrics during the run.
+
+#### Split A: Non-IID (Heterogeneous Local Task Permutation)
+**Linux / macOS**
 ```bash
 python main.py \
   --dataset CIFAR100 \
-  --data_split_file data_split/CIFAR100_split_cn10_tn4_cet20_s2571.pkl \
+  --data_split_file data_split/CIFAR100_NONIID_cn10_tn4_cet20_s2571.pkl \
   --num_glob_iters 40 --local_epochs 400 \
   --lr 1e-3 --flow_lr 5e-3 \
-  --k_loss_flow 0.5 --k_flow_lastflow 0.1 --flow_explore_theta 0.1 --fedprox_k 0.001
+  --k_loss_flow 0.5 --k_flow_lastflow 0.1 --flow_explore_theta 0.1 --fedprox_k 0.001 \
+  --cosine --gmm --gmm_k 4 --adaptive --tb_log
 ```
 
-#### Windows CMD
-```cmd
-python main.py ^
-  --dataset CIFAR100 ^
-  --data_split_file data_split/CIFAR100_split_cn10_tn4_cet20_s2571.pkl ^
-  --num_glob_iters 40 --local_epochs 400 ^
-  --lr 1e-3 --flow_lr 5e-3 ^
-  --k_loss_flow 0.5 --k_flow_lastflow 0.1 --flow_explore_theta 0.1 --fedprox_k 0.001
+#### Split B: IID (Homogeneous Class Distributions)
+**Linux / macOS**
+```bash
+python main.py \
+  --dataset CIFAR100 \
+  --data_split_file data_split/CIFAR100_IID_cn10_tn4_cet20_s2571.pkl \
+  --num_glob_iters 40 --local_epochs 400 \
+  --lr 1e-3 --flow_lr 5e-3 \
+  --k_loss_flow 0.5 --k_flow_lastflow 0.1 --flow_explore_theta 0.1 --fedprox_k 0.001 \
+  --cosine --gmm --gmm_k 4 --adaptive --tb_log
 ```
 
-#### Windows PowerShell
-```powershell
-python main.py `
-  --dataset CIFAR100 `
-  --data_split_file data_split/CIFAR100_split_cn10_tn4_cet20_s2571.pkl `
-  --num_glob_iters 40 --local_epochs 400 `
-  --lr 1e-3 --flow_lr 5e-3 `
-  --k_loss_flow 0.5 --k_flow_lastflow 0.1 --flow_explore_theta 0.1 --fedprox_k 0.001
-```
+*(Note: For Windows CMD/PowerShell, replace `\` with `^` or `` ` `` respectively as demonstrated in earlier examples).*
 
 ---
+
+## Research Metrics Pipeline
+
+An observational logging and visualization pipeline is integrated into the training loops to rigorously evaluate federated continual learning performance. Append `--tb_log` to any run command to enable TensorBoard scalars.
+
+After training completes, the framework automatically generates the following outputs in your `--target_dir_name` (default: `output_dir/`):
+- `forgetting_metrics.csv`: Task-wise Catastrophic Forgetting, Forward Transfer (FWT), Backward Transfer (BWT).
+- `communication_metrics.csv`: Cumulative and per-round federated communication cost in Megabytes.
+- `cosine_analysis.csv`: Analysis of cosine similarity between normalizing-flow-generated replay features and genuine features.
+- `bias_metrics.csv`: Demographic Parity, Equality of Opportunity, Equalized Odds, and Predictive Parity evaluated on final model predictions.
+- `research_metrics_summary.json`: A consolidated JSON dictionary of all final metrics.
+- `plots/`: Automatic publication-quality figures including accuracy heatmaps, forgetting bar charts, communication lines, and correlation scatters.
 
 ## Running on GPU
 

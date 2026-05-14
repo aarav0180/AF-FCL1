@@ -1,0 +1,21 @@
+# MNIST-SVHN-FashionMNIST: N=10, T=6, C=3
+# Paper C.3: lr=1e-4, global_rounds=60, local_iterations=100, batch_size=64
+
+# Step 1: Generate the split file
+python generate_mnistsvhnf_split.py
+
+# Step 2: Run training
+python main.py \
+    --dataset MNIST-SVHN-FASHION \
+    --datadir datasets/PreciseFCL/ \
+    --data_split_file data_split/MNISTSVHNFASHION_split_cn10_tn6_cet3_s2571.pkl \
+    --algorithm PreciseFCL \
+    --seed 2571 \
+    --lr 1e-4 \
+    --flow_lr 1e-4 \
+    --num_glob_iters 60 \
+    --local_epochs 100 \
+    --batch_size 64 \
+    --device cuda \
+    --target_dir_name output_mnistsvhnf \
+    --train 1
